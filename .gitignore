@@ -5,4 +5,7 @@ __pycache__/
 .DS_Store
 .vscode/
 data/raw/
-data/processed/
+data/processed/*
+!data/processed/fx/
+data/processed/fx/*
+!data/processed/fx/eurusd_labels.csv
