@@ -1,0 +1,7 @@
+start: "2015-01-01"
+end: "2025-11-12"
+interval: "1d"
+
+equities: []            # keine Aktien laden
+fx:
+  - "EURUSD=X"          # Yahoo-Symbol für EURUSD
