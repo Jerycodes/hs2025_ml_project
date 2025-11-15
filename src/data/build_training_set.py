@@ -45,10 +45,58 @@ def save_training_dataframe(df: pd.DataFrame, path: Path | None = None) -> Path:
 
 def main() -> None:
     merged = build_training_dataframe()
-    # Für das spätere Modell reichen News-Features + Label + Lookahead.
+
+    # Zusätzliche Zielvariablen für das Zwei-Stufen-Modell:
+    # signal: 1 = Bewegung (up/down), 0 = neutral.
+    merged["signal"] = (merged["label"] != "neutral").astype(int)
+
+    # direction: nur für Tage mit Bewegung relevant.
+    # 1 = up, 0 = down, NaN = neutral (wird für das Richtungsmodell ignoriert).
+    direction_map = {"down": 0, "up": 1}
+    merged["direction"] = merged["label"].map(direction_map)
+
+    # Kalender-basierte Zusatzfeatures:
+    # Monat (1–12), Kalenderwoche (ISO-Standard) und Quartal (1–4).
+    merged["month"] = merged["date"].dt.month
+    iso = merged["date"].dt.isocalendar()
+    merged["week"] = iso.week.astype(int)
+    merged["quarter"] = merged["date"].dt.quarter
+
+    # Preisbasierte Tagesfeatures aus High/Low/Open/Close:
+    # 1) Intraday-Spanne in absoluten Punkten.
+    merged["intraday_range"] = merged["High"] - merged["Low"]
+    # 2) Intraday-Spanne relativ zum Schlusskurs (Volatilität eines Tages).
+    merged["intraday_range_pct"] = merged["intraday_range"] / merged["Close"]
+    # 3) Kerzenkoerper: Close minus Open (positiv = bullische Kerze).
+    merged["body"] = merged["Close"] - merged["Open"]
+    merged["body_pct"] = merged["body"] / merged["Close"]
+    # 4) Docht/Lunte: Abstand vom Kerzenkoerper zu High/Low.
+    merged["upper_shadow"] = merged["High"] - merged[["Open", "Close"]].max(axis=1)
+    merged["lower_shadow"] = merged[["Open", "Close"]].min(axis=1) - merged["Low"]
+
+    # Sentiment-basierte abgeleitete Features:
+    # Anteil positiver / negativer Sentiment-Anteile (auf Basis avg_pos/avg_neg).
+    sentiment_denom = (merged["avg_pos"] + merged["avg_neg"]).replace(0, 1e-6)
+    merged["pos_share"] = merged["avg_pos"] / sentiment_denom
+    merged["neg_share"] = merged["avg_neg"] / sentiment_denom
+
+    # Für das spätere Modell reichen News-Features + Label + Lookahead + neue Targets.
     cols = [
         "date",
         "label",
+        "signal",
+        "direction",
+        "month",
+        "week",
+        "quarter",
+        "intraday_range",
+        "intraday_range_pct",
+        "body",
+        "body_pct",
+        "upper_shadow",
+        "lower_shadow",
+        "pos_share",
+        "neg_share",
         "lookahead_return",
         "article_count",
         "avg_polarity",

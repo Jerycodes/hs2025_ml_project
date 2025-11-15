@@ -24,3 +24,6 @@ tzdata==2025.2
 urllib3==2.5.0
 websockets==15.0.1
 yfinance==0.2.66
+xgboost==2.0.3
+scikit-learn==1.5.2
+seaborn==0.13.2

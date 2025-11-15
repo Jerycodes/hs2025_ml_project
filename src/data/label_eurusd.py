@@ -1,10 +1,21 @@
 """Label-Generator fuer EURUSD (Tagesdaten).
 
-Die Funktion `label_eurusd` liest data/raw/fx/EURUSDX.csv ein,
-vergleicht jeden Tag mit dem Kurs N Tage spaeter und vergibt Labels:
-- up    => Lookahead-Return >= up_threshold
-- down  => Lookahead-Return <= down_threshold
-- neutral => dazwischen.
+Die Funktion `label_eurusd` liest data/raw/fx/EURUSDX.csv ein
+und vergibt fuer jeden Tag ein Label:
+
+- up      => Kurs ist nach `horizon_days` deutlich hoeher
+             UND steigt auf dem Weg dorthin an jedem Tag.
+- down    => Kurs ist nach `horizon_days` deutlich tiefer
+             UND faellt auf dem Weg dorthin an jedem Tag.
+- neutral => alle uebrigen Faelle.
+
+Konkrete Standard-Logik:
+- horizon_days = 4 → wir betrachten die Tage t, t+1, t+2, t+3, t+4.
+- up:   C_{t+4} >= C_t * (1 + up_threshold)
+        UND C_{t+1} > C_t, C_{t+2} > C_{t+1}, ... (streng steigend)
+- down: C_{t+4} <= C_t * (1 + down_threshold)
+        UND C_{t+1} < C_t, C_{t+2} < C_{t+1}, ... (streng fallend)
+
 Die Ausgabe wird in data/processed/fx/eurusd_labels.csv gespeichert.
 """
 
@@ -12,17 +23,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.utils.io import DATA_PROCESSED, DATA_RAW
 
 
 def label_eurusd(
-    horizon_days: int = 3,
-    up_threshold: float = 0.005,
-    down_threshold: float = -0.005,
+    horizon_days: int = 4,
+    up_threshold: float = 0.01,
+    down_threshold: float = -0.01,
+    strict_monotonic: bool = True,
 ) -> pd.DataFrame:
-    """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze."""
+    """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze.
+
+    Parameter:
+    - horizon_days: Anzahl Tage, in die in die Zukunft geschaut wird
+      (Standard: 4 → t bis t+4).
+    - up_threshold / down_threshold: minimale/negative Rendite, ab der ein up/down
+      vergeben wird, wenn die Pfad-Bedingung erfuellt ist.
+    - strict_monotonic: Wenn True, muss der Pfad zwischen Start und Horizont
+      fuer up streng steigend bzw. fuer down streng fallend sein.
+    """
 
     # Rohdaten laden und chronologisch sortieren
     csv_path = DATA_RAW / "fx" / "EURUSDX.csv"
@@ -44,11 +66,46 @@ def label_eurusd(
     # Lookahead-Return: Kurs in N Tagen vs. heutiger Kurs
     future_close = df["Close"].shift(-horizon_days)
     returns = (future_close - df["Close"]) / df["Close"]
+    close = df["Close"].to_numpy()
 
-    # Schwellenwerte anwenden, um Labels zu vergeben
+    # Monotonie-Bedingung:
+    # Fuer jeden Starttag betrachten wir den Pfad von t bis t+horizon_days.
+    # up:   diffs > 0 an jedem Tag
+    # down: diffs < 0 an jedem Tag
+    n = len(close)
+    mono_up = np.full(n, False)
+    mono_down = np.full(n, False)
+
+    if strict_monotonic:
+        for i in range(n):
+            end = i + horizon_days
+            if end >= n:
+                # Am Ende der Zeitreihe gibt es nicht mehr genug Zukunftsdaten.
+                continue
+            segment = close[i : end + 1]  # Werte von t bis t+horizon_days
+            diffs = np.diff(segment)
+            mono_up[i] = np.all(diffs > 0)
+            mono_down[i] = np.all(diffs < 0)
+    else:
+        # Wenn wir die Monotonie nicht erzwingen, sind alle Pfade formal "erlaubt".
+        mono_up[:] = True
+        mono_down[:] = True
+
+    # Schwellenwerte anwenden, um Labels zu vergeben:
+    # Startwert fuer alle Tage ist neutral.
     labels = pd.Series("neutral", index=df.index)
-    labels.loc[returns >= up_threshold] = "up"
-    labels.loc[returns <= down_threshold] = "down"
+
+    # Bedingungen fuer up:
+    # 1) Endrendite ist stark genug positiv.
+    # 2) Der Pfad ist streng steigend (oder Monotonie ist deaktiviert).
+    up_mask = (returns >= up_threshold) & pd.Series(mono_up, index=df.index)
+    labels.loc[up_mask] = "up"
+
+    # Bedingungen fuer down:
+    # 1) Endrendite ist stark genug negativ.
+    # 2) Der Pfad ist streng fallend (oder Monotonie ist deaktiviert).
+    down_mask = (returns <= down_threshold) & pd.Series(mono_down, index=df.index)
+    labels.loc[down_mask] = "down"
 
     # Ergebnis zusammenbauen und Zeilen ohne Zukunftswerte entfernen
     result = df.copy()
