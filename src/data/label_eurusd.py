@@ -22,7 +22,7 @@ Die Ausgabe wird in data/processed/fx/eurusd_labels.csv gespeichert.
 from __future__ import annotations
 
 from pathlib import Path
-
+import argparse
 import numpy as np
 import pandas as pd
 
@@ -115,15 +115,46 @@ def label_eurusd(
 
 
 def main() -> None:
-    """Berechnet Labels und schreibt sie nach data/processed/fx/."""
+    """Berechnet Labels und schreibt sie nach data/processed/fx/.
+
+    Zusätzlich zur Standarddatei ``eurusd_labels.csv`` kann per ``--exp-id``
+    eine Varianten-Datei angelegt werden, z. B.:
+
+    ``eurusd_labels__v1_h4_thr0p5pct_strict.csv``
+
+    So lassen sich verschiedene Label-Konfigurationen archivieren,
+    während weiterhin eine „aktuelle“ Datei existiert.
+    """
+
+    parser = argparse.ArgumentParser(description="EURUSD-Labels generieren.")
+    parser.add_argument(
+        "--exp-id",
+        type=str,
+        default=None,
+        help=(
+            "Optionale Experiment-ID, die als Suffix an den Dateinamen "
+            "angehängt wird, z. B. 'v1_h4_thr0p5pct_strict'."
+        ),
+    )
+    args = parser.parse_args()
 
     labeled = label_eurusd()
 
-    out_path = DATA_PROCESSED / "fx" / "eurusd_labels.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    labeled.to_csv(out_path)
+    out_dir = DATA_PROCESSED / "fx"
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[ok] EURUSD-Labels gespeichert: {out_path}")
+    # 1) Aktuelle Standarddatei (für Notebook-Default und Backwards-Kompatibilität)
+    latest_path = out_dir / "eurusd_labels.csv"
+    labeled.to_csv(latest_path)
+    print(f"[ok] EURUSD-Labels (aktuell) gespeichert: {latest_path}")
+
+    # 2) Optionale Varianten-Datei mit Experiment-ID als Suffix
+    if args.exp_id:
+        safe_suffix = args.exp_id.replace(" ", "_")
+        exp_path = out_dir / f"eurusd_labels__{safe_suffix}.csv"
+        labeled.to_csv(exp_path)
+        print(f"[ok] EURUSD-Labels (Experiment) gespeichert: {exp_path}")
 
 
 if __name__ == "__main__":
