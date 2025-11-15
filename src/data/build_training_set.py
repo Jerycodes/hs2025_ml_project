@@ -38,52 +38,24 @@ def load_labels(path: Path | None = None, exp_id: str | None = None) -> pd.DataF
 
 
 def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
-    """Merged die News-Features mit den FX-Labels.
+    """Baut den vollständigen Trainings-DataFrame für das Zwei-Stufen-Modell.
 
-    Parameter:
-    - exp_id: Optionale Experiment-ID, um eine bestimmte Label-Datei
-      (eurusd_labels__<exp_id>.csv) zu verwenden.
+    Schritte:
+    1. News-Tagesfeatures laden.
+    2. FX-Labels laden (ggf. mit Experiment-ID).
+    3. Auf dem Datum mergen.
+    4. Zusätzliche Zielvariablen (signal/direction) und Feature-Spalten
+       (Kalender-, Preis- und Sentimentfeatures) berechnen.
+
+    Parameter
+    ---------
+    exp_id:
+        Optionale Experiment-ID, um eine bestimmte Label-Datei
+        (``eurusd_labels__<exp_id>.csv``) zu verwenden.
     """
     news = load_news_features()
     labels = load_labels(exp_id=exp_id)
     merged = labels.merge(news, on="date", how="inner")
-    return merged
-
-
-def save_training_dataframe(df: pd.DataFrame, path: Path | None = None) -> Path:
-    """Speichert das Training-CSV unter data/processed/datasets/."""
-    if path is None:
-        path = DATA_PROCESSED / "datasets" / "eurusd_news_training.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
-    return path
-
-
-def main() -> None:
-    """Erzeugt den Trainingsdatensatz und legt Varianten-Dateien an.
-
-    Standardfall:
-        - schreibt nach data/processed/datasets/eurusd_news_training.csv
-
-    Mit ``--exp-id``:
-        - verwendet die Label-Datei eurusd_labels__<exp_id>.csv
-        - legt zusätzlich eurusd_news_training__<exp_id>.csv an
-    """
-
-    parser = argparse.ArgumentParser(description="Trainingsdatensatz aus Labels + News bauen.")
-    parser.add_argument(
-        "--exp-id",
-        type=str,
-        default=None,
-        help=(
-            "Experiment-ID, z. B. 'v1_h4_thr0p5pct_strict'. "
-            "Wenn gesetzt, wird die passende Label-Datei verwendet "
-            "und der Trainingsdatensatz zusätzlich mit dieser ID archiviert."
-        ),
-    )
-    args = parser.parse_args()
-
-    merged = build_training_dataframe(exp_id=args.exp_id)
 
     # Zusätzliche Zielvariablen für das Zwei-Stufen-Modell:
     # signal: 1 = Bewegung (up/down), 0 = neutral.
@@ -144,6 +116,43 @@ def main() -> None:
         "avg_pos",
     ]
     merged = merged[cols]
+    return merged
+
+
+def save_training_dataframe(df: pd.DataFrame, path: Path | None = None) -> Path:
+    """Speichert das Training-CSV unter data/processed/datasets/."""
+    if path is None:
+        path = DATA_PROCESSED / "datasets" / "eurusd_news_training.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path
+
+
+def main() -> None:
+    """Erzeugt den Trainingsdatensatz und legt Varianten-Dateien an.
+
+    Standardfall:
+        - schreibt nach data/processed/datasets/eurusd_news_training.csv
+
+    Mit ``--exp-id``:
+        - verwendet die Label-Datei eurusd_labels__<exp_id>.csv
+        - legt zusätzlich eurusd_news_training__<exp_id>.csv an
+    """
+
+    parser = argparse.ArgumentParser(description="Trainingsdatensatz aus Labels + News bauen.")
+    parser.add_argument(
+        "--exp-id",
+        type=str,
+        default=None,
+        help=(
+            "Experiment-ID, z. B. 'v1_h4_thr0p5pct_strict'. "
+            "Wenn gesetzt, wird die passende Label-Datei verwendet "
+            "und der Trainingsdatensatz zusätzlich mit dieser ID archiviert."
+        ),
+    )
+    args = parser.parse_args()
+
+    merged = build_training_dataframe(exp_id=args.exp_id)
 
     # 1) Standarddatei (aktuelle Version)
     out_path = save_training_dataframe(merged)
