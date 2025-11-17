@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
+from pathlib import Path
 
 import pandas as pd
 
+from src.features.eurusd_features import add_eurusd_features
 from src.utils.io import DATA_PROCESSED
 
 
@@ -91,6 +92,9 @@ def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
     merged["pos_share"] = merged["avg_pos"] / sentiment_denom
     merged["neg_share"] = merged["avg_neg"] / sentiment_denom
 
+    # Zusätzliche Preis-/News-/Kalender-/Holiday-Features (ohne Lookahead).
+    merged = add_eurusd_features(merged)
+
     # Für das spätere Modell reichen News-Features + Label + Lookahead + neue Targets.
     cols = [
         "date",
@@ -108,6 +112,30 @@ def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
         "lower_shadow",
         "pos_share",
         "neg_share",
+        # Zusätzliche Preis-Features
+        "price_close_ret_1d",
+        "price_close_ret_5d",
+        "price_range_pct_5d_std",
+        "price_body_pct_5d_mean",
+        # News-Historie / -Intensität
+        "news_article_count_3d_sum",
+        "news_article_count_7d_sum",
+        "news_pos_share_5d_mean",
+        "news_neg_share_5d_mean",
+        "news_article_count_lag1",
+        "news_pos_share_lag1",
+        "news_neg_share_lag1",
+        # Kalender-Features
+        "cal_dow",
+        "cal_day_of_month",
+        "cal_is_monday",
+        "cal_is_friday",
+        "cal_is_month_start",
+        "cal_is_month_end",
+        # US-Feiertags-Features
+        "hol_is_us_federal_holiday",
+        "hol_is_day_before_us_federal_holiday",
+        "hol_is_day_after_us_federal_holiday",
         "lookahead_return",
         "article_count",
         "avg_polarity",

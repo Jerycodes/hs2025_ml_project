@@ -27,7 +27,13 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 DATASET_PATH = Path("data/processed/datasets/eurusd_news_training.csv")
 
 # Feature-Satz für beide Stufen (kann später erweitert/angepasst werden).
+# Namenskonvention:
+# - price_*  → Preis-/Volatilitätsfeatures aus OHLC-Daten.
+# - news_*   → aggregierte News-/Sentimentfeatures.
+# - cal_*    → Kalender-/Saison-Features.
+# - hol_*    → Holiday-Features (US-Feiertage).
 FEATURE_COLS = [
+    # News-Level (Tagesaggregationen)
     "article_count",
     "avg_polarity",
     "avg_neg",
@@ -35,11 +41,34 @@ FEATURE_COLS = [
     "avg_pos",
     "pos_share",
     "neg_share",
+    # Preis-Level (Kerzenform / Volatilität / Returns)
     "intraday_range_pct",
     "upper_shadow",
     "lower_shadow",
+    "price_close_ret_1d",
+    "price_close_ret_5d",
+    "price_range_pct_5d_std",
+    "price_body_pct_5d_mean",
+    # News-Historie / -Intensität
+    "news_article_count_3d_sum",
+    "news_article_count_7d_sum",
+    "news_pos_share_5d_mean",
+    "news_neg_share_5d_mean",
+    "news_article_count_lag1",
+    "news_pos_share_lag1",
+    "news_neg_share_lag1",
+    # Kalender-/Holiday-Features
     "month",
     "quarter",
+    "cal_dow",
+    "cal_day_of_month",
+    "cal_is_monday",
+    "cal_is_friday",
+    "cal_is_month_start",
+    "cal_is_month_end",
+    "hol_is_us_federal_holiday",
+    "hol_is_day_before_us_federal_holiday",
+    "hol_is_day_after_us_federal_holiday",
 ]
 
 
