@@ -34,6 +34,7 @@ def label_eurusd(
     up_threshold: float = 0.01,
     down_threshold: float = -0.01,
     strict_monotonic: bool = True,
+    max_adverse_move_pct: float | None = None,
 ) -> pd.DataFrame:
     """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze.
 
@@ -44,6 +45,22 @@ def label_eurusd(
       vergeben wird, wenn die Pfad-Bedingung erfuellt ist.
     - strict_monotonic: Wenn True, muss der Pfad zwischen Start und Horizont
       fuer up streng steigend bzw. fuer down streng fallend sein.
+      Wenn False, wird keine Monotonie-Bedingung erzwungen.
+    - max_adverse_move_pct:
+        Optionaler zusaetzlicher Pfad-Filter (tolerante Variante).
+
+        Idee:
+        - up:   Kurs darf zwischen t und t+horizon_days nie mehr als
+                ``max_adverse_move_pct`` unter den Startkurs fallen.
+        - down: Kurs darf zwischen t und t+horizon_days nie mehr als
+                ``max_adverse_move_pct`` ueber den Startkurs steigen.
+
+        Beispiele:
+        - max_adverse_move_pct = 0.003 → maximal -0.3 % gegen die eigentliche
+          Richtung erlaubt.
+
+        Wenn ``max_adverse_move_pct`` = None, wird kein zusaetzlicher
+        Adverse-Move-Filter angewendet.
     """
 
     # Rohdaten laden und chronologisch sortieren
@@ -68,28 +85,54 @@ def label_eurusd(
     returns = (future_close - df["Close"]) / df["Close"]
     close = df["Close"].to_numpy()
 
-    # Monotonie-Bedingung:
+    # Pfad-Bedingungen:
     # Fuer jeden Starttag betrachten wir den Pfad von t bis t+horizon_days.
-    # up:   diffs > 0 an jedem Tag
-    # down: diffs < 0 an jedem Tag
+    # - Monotonie (optional):
+    #       up:   diffs > 0 an jedem Tag
+    #       down: diffs < 0 an jedem Tag
+    # - Adverse Move (optional, tolerante Variante):
+    #       up:   min(segment) >= start * (1 - max_adverse_move_pct)
+    #       down: max(segment) <= start * (1 + max_adverse_move_pct)
     n = len(close)
     mono_up = np.full(n, False)
     mono_down = np.full(n, False)
 
-    if strict_monotonic:
+    # Wenn weder Monotonie noch Adverse-Move-Filter gesetzt sind,
+    # sind alle Pfade formal "erlaubt".
+    if not strict_monotonic and max_adverse_move_pct is None:
+        mono_up[:] = True
+        mono_down[:] = True
+    else:
         for i in range(n):
             end = i + horizon_days
             if end >= n:
                 # Am Ende der Zeitreihe gibt es nicht mehr genug Zukunftsdaten.
                 continue
+
             segment = close[i : end + 1]  # Werte von t bis t+horizon_days
-            diffs = np.diff(segment)
-            mono_up[i] = np.all(diffs > 0)
-            mono_down[i] = np.all(diffs < 0)
-    else:
-        # Wenn wir die Monotonie nicht erzwingen, sind alle Pfade formal "erlaubt".
-        mono_up[:] = True
-        mono_down[:] = True
+            start = segment[0]
+
+            # 1) Monotonie-Bedingung (falls aktiviert)
+            if strict_monotonic:
+                diffs = np.diff(segment)
+                up_ok_monotonic = np.all(diffs > 0)
+                down_ok_monotonic = np.all(diffs < 0)
+            else:
+                up_ok_monotonic = True
+                down_ok_monotonic = True
+
+            # 2) Adverse-Move-Bedingung (falls aktiviert)
+            if max_adverse_move_pct is not None:
+                min_seg = segment.min()
+                max_seg = segment.max()
+                up_ok_adverse = min_seg >= start * (1 - max_adverse_move_pct)
+                down_ok_adverse = max_seg <= start * (1 + max_adverse_move_pct)
+            else:
+                up_ok_adverse = True
+                down_ok_adverse = True
+
+            mono_up[i] = up_ok_monotonic and up_ok_adverse
+            mono_down[i] = down_ok_monotonic and down_ok_adverse
 
     # Schwellenwerte anwenden, um Labels zu vergeben:
     # Startwert fuer alle Tage ist neutral.
