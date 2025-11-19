@@ -220,14 +220,8 @@ def main() -> None:
     X_val_signal = splits["val"][FEATURE_COLS]
     X_test_signal = splits["test"][FEATURE_COLS]
 
-    # Für das Signal-Modell wollen wir Recall (insbesondere für Down-Tage)
-    # etwas begünstigen und wählen daher ein moderates, festes class-weighting.
     model_signal = train_xgb_binary(
-        X_train_signal,
-        y_train_signal,
-        X_val_signal,
-        y_val_signal,
-        scale_pos_weight=1.0,
+        X_train_signal, y_train_signal, X_val_signal, y_val_signal
     )
 
     for split_name, X, y in [
