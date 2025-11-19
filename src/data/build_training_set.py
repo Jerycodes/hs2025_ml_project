@@ -117,6 +117,9 @@ def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
         "price_close_ret_5d",
         "price_range_pct_5d_std",
         "price_body_pct_5d_mean",
+        "price_close_ret_30d",
+        "price_range_pct_30d_std",
+        "price_body_pct_30d_mean",
         # News-Historie / -Intensität
         "news_article_count_3d_sum",
         "news_article_count_7d_sum",

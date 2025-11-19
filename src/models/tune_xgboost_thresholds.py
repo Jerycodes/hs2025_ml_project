@@ -27,12 +27,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report
 
-from src.models.train_xgboost_two_stage import (
-    FEATURE_COLS,
-    load_dataset,
-    split_train_val_test,
-    train_xgb_binary,
-)
+from src.models.train_xgboost_two_stage import load_dataset, split_train_val_test, train_xgb_binary, get_feature_cols
 
 
 def build_up_target(df: pd.DataFrame) -> np.ndarray:
@@ -98,9 +93,10 @@ def tune_direction(
     y_val = build_target(df_splits["val"])
     y_test = build_target(df_splits["test"])
 
-    X_train = df_splits["train"][FEATURE_COLS]
-    X_val = df_splits["val"][FEATURE_COLS]
-    X_test = df_splits["test"][FEATURE_COLS]
+    feature_cols = get_feature_cols(df_splits["train"])
+    X_train = df_splits["train"][feature_cols]
+    X_val = df_splits["val"][feature_cols]
+    X_test = df_splits["test"][feature_cols]
 
     model = train_xgb_binary(X_train, y_train, X_val, y_val)
 

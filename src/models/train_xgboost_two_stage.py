@@ -49,6 +49,9 @@ FEATURE_COLS = [
     "price_close_ret_5d",
     "price_range_pct_5d_std",
     "price_body_pct_5d_mean",
+    "price_close_ret_30d",
+    "price_range_pct_30d_std",
+    "price_body_pct_30d_mean",
     # News-Historie / -Intensität
     "news_article_count_3d_sum",
     "news_article_count_7d_sum",
@@ -70,6 +73,11 @@ FEATURE_COLS = [
     "hol_is_day_before_us_federal_holiday",
     "hol_is_day_after_us_federal_holiday",
 ]
+
+
+def get_feature_cols(df: pd.DataFrame) -> list[str]:
+    """Gibt alle in FEATURE_COLS definierten Spalten zurück, die im DataFrame existieren."""
+    return [col for col in FEATURE_COLS if col in df.columns]
 
 
 def load_dataset(path: Path) -> pd.DataFrame:
@@ -165,7 +173,9 @@ def build_signal_targets(df: pd.DataFrame) -> pd.Series:
     return df["signal"].astype(int)
 
 
-def build_direction_targets(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+def build_direction_targets(
+    df: pd.DataFrame, feature_cols: list[str]
+) -> Tuple[pd.DataFrame, np.ndarray]:
     """Filtert auf Tage mit Bewegung und gibt X, y für das Richtungsmodell zurück."""
     if "direction" not in df.columns or "signal" not in df.columns:
         raise KeyError("Spalten 'signal' oder 'direction' fehlen im Datensatz.")
@@ -173,7 +183,7 @@ def build_direction_targets(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]
     df_move = df[df["signal"] == 1].copy()
     df_move = df_move[df_move["direction"].notna()].copy()
     y = df_move["direction"].astype(int).to_numpy()
-    X = df_move[FEATURE_COLS]
+    X = df_move[feature_cols]
     return X, y
 
 
@@ -204,6 +214,9 @@ def main() -> None:
     args = parse_args()
     df = load_dataset(args.dataset)
 
+    feature_cols = get_feature_cols(df)
+    print(f"[info] Verwende {len(feature_cols)} Feature-Spalten.")
+
     # Splits vorbereiten
     splits = split_train_val_test(
         df, pd.to_datetime(args.test_start), args.train_frac_pretest
@@ -216,9 +229,9 @@ def main() -> None:
     y_val_signal = build_signal_targets(splits["val"])
     y_test_signal = build_signal_targets(splits["test"])
 
-    X_train_signal = splits["train"][FEATURE_COLS]
-    X_val_signal = splits["val"][FEATURE_COLS]
-    X_test_signal = splits["test"][FEATURE_COLS]
+    X_train_signal = splits["train"][feature_cols]
+    X_val_signal = splits["val"][feature_cols]
+    X_test_signal = splits["test"][feature_cols]
 
     model_signal = train_xgb_binary(
         X_train_signal, y_train_signal, X_val_signal, y_val_signal
@@ -234,9 +247,15 @@ def main() -> None:
     # ---------- Stufe 2: Richtung (up vs down, nur wenn Bewegung) ----------
     print("\n===== STUFE 2: RICHTUNG (up vs down, nur signal==1) =====")
 
-    X_train_dir, y_train_dir = build_direction_targets(splits["train"])
-    X_val_dir, y_val_dir = build_direction_targets(splits["val"])
-    X_test_dir, y_test_dir = build_direction_targets(splits["test"])
+    X_train_dir, y_train_dir = build_direction_targets(
+        splits["train"], feature_cols=feature_cols
+    )
+    X_val_dir, y_val_dir = build_direction_targets(
+        splits["val"], feature_cols=feature_cols
+    )
+    X_test_dir, y_test_dir = build_direction_targets(
+        splits["test"], feature_cols=feature_cols
+    )
 
     model_dir = train_xgb_binary(
         X_train_dir, y_train_dir, X_val_dir, y_val_dir, scale_pos_weight=1.0
@@ -251,7 +270,7 @@ def main() -> None:
 
     # ---------- kombinierte Auswertung: 3-Klassen-Label auf Test ----------
     print("\n===== KOMBINIERTE TEST-AUSWERTUNG (neutral/up/down) =====")
-    X_test_all = splits["test"][FEATURE_COLS]
+    X_test_all = splits["test"][feature_cols]
     # Vorhersage: zuerst Signal, dann Richtung für signal==1
     signal_pred = (model_signal.predict_proba(X_test_all)[:, 1] >= 0.5).astype(int)
     dir_pred = (model_dir.predict_proba(X_test_all)[:, 1] >= 0.5).astype(int)

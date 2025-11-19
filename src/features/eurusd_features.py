@@ -92,6 +92,15 @@ def add_eurusd_features(df: pd.DataFrame) -> pd.DataFrame:
         df["body_pct"].rolling(window=5, min_periods=5).mean()
     )
 
+    # 30-Tage-Historie: mittelfristiger Trend und Volatilität
+    df["price_close_ret_30d"] = close.pct_change(periods=30)
+    df["price_range_pct_30d_std"] = (
+        df["intraday_range_pct"].rolling(window=30, min_periods=30).std()
+    )
+    df["price_body_pct_30d_mean"] = (
+        df["body_pct"].rolling(window=30, min_periods=30).mean()
+    )
+
     # ---------- News-Historie / -Intensität (news_...) ----------
     df["news_article_count_3d_sum"] = (
         df["article_count"].rolling(window=3, min_periods=3).sum()
@@ -126,4 +135,3 @@ def add_eurusd_features(df: pd.DataFrame) -> pd.DataFrame:
     df = _add_us_holiday_flags(df)
 
     return df
-
