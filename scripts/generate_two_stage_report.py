@@ -152,11 +152,47 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     write(f"- train_frac_within_pretest: {cfg.get('train_frac_within_pretest')}")
     y -= line_height
 
+    # Hinweis auf die verwendeten Features; die vollständige Liste ist
+    # auf einer separaten Feature-Seite untergebracht, damit auf der
+    # Titelseite nichts abgeschnitten wird.
     feature_cols = cfg.get("feature_cols", [])
     if feature_cols:
-        write("Features (FEATURE_COLS):", bold=True)
-        for col in feature_cols:
-            write(f"- {col}")
+        write(
+            "Features (FEATURE_COLS): vollständige Liste auf der Feature-Seite weiter unten.",
+            bold=True,
+            max_width=80,
+        )
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def add_features_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
+    """Fügt eine Seite mit einer vollständigen Feature-Liste hinzu.
+
+    So wird sichergestellt, dass alle genutzten Feature-Namen vollständig
+    im Report sichtbar sind (ohne Abschneiden an der Titelseite).
+    """
+    cfg = results.get("config", {})
+    feature_cols = cfg.get("feature_cols", [])
+    if not feature_cols:
+        return
+
+    fig, ax = plt.subplots(figsize=(8.27, 11.69))
+    ax.axis("off")
+    ax.set_title("Verwendete Features (FEATURE_COLS)", fontsize=12, weight="bold", pad=10)
+
+    # Tabelle mit zwei Spalten: Index und Feature-Name
+    rows = [[i, col] for i, col in enumerate(feature_cols)]
+    table = ax.table(
+        cellText=rows,
+        colLabels=["#", "feature_name"],
+        loc="center",
+        cellLoc="left",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1.2, 1.2)
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -413,24 +449,112 @@ def add_combined_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
 
 
 def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
-    """Fügt Confusion-Matrix-Seiten für Signal- und Richtungs-Modell (Test-Split) hinzu."""
+    """Fügt Confusion-Matrix-Seiten für Signal-, Richtungs- und Kombi-Modell hinzu.
+
+    - Signal: train/val/test (2x2) auf einer Seite
+    - Richtung: train/val/test (2x2) auf einer Seite
+    - Kombiniert: Test (3-Klassen) auf einer Seite
+    """
     sns.set(style="white")
 
-    # Signal: neutral vs. move
-    cm_signal = np.array(results["signal"]["test"]["confusion_matrix"])
-    fig, ax = plt.subplots(figsize=(4, 4))
+    # ---------------- Signal: neutral vs. move (train/val/test) ----------------
+    splits = ["train", "val", "test"]
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
+    for ax, split in zip(axes, splits):
+        cm = np.array(results["signal"][split]["confusion_matrix"])
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=["neutral", "move"],
+            yticklabels=["neutral", "move"],
+            ax=ax,
+        )
+        ax.set_title(f"Signal – {split}")
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+    plt.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # ---------------- Richtung: down vs. up (train/val/test) -------------------
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
+    for ax, split in zip(axes, splits):
+        cm = np.array(results["direction"][split]["confusion_matrix"])
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Reds",
+            xticklabels=["down", "up"],
+            yticklabels=["down", "up"],
+            ax=ax,
+        )
+        ax.set_title(f"Richtung – {split}")
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+    plt.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # ---------------- Kombiniert: neutral / up / down (Test) -------------------
+    cm_combined = np.array(results["combined_test"]["confusion_matrix"])
+    fig, ax = plt.subplots(figsize=(4.5, 4.5))
     sns.heatmap(
-        cm_signal,
+        cm_combined,
         annot=True,
         fmt="d",
-        cmap="Blues",
-        xticklabels=["neutral", "move"],
-        yticklabels=["neutral", "move"],
+        cmap="Greens",
+        xticklabels=["neutral", "up", "down"],
+        yticklabels=["neutral", "up", "down"],
         ax=ax,
     )
-    ax.set_title("Confusion Matrix – Test (Signal: neutral vs. move)")
+    ax.set_title("Confusion Matrix – Test (neutral / up / down)")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
+    plt.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def add_confusion_tables_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
+    """Fügt eine Seite mit TN/FP/FN/TP-Tabellen für Signal- und Richtungsmodell hinzu."""
+    rows = []
+    for model_key, model_name in [("signal", "signal (neutral vs. move)"), ("direction", "direction (down vs. up)")]:
+        for split in ["train", "val", "test"]:
+            cm = np.array(results[model_key][split]["confusion_matrix"])
+            if cm.shape == (2, 2):
+                tn, fp, fn, tp = cm[0, 0], cm[0, 1], cm[1, 0], cm[1, 1]
+                rows.append(
+                    [
+                        model_name,
+                        split,
+                        int(tn),
+                        int(fp),
+                        int(fn),
+                        int(tp),
+                    ]
+                )
+
+    if not rows:
+        return
+
+    fig, ax = plt.subplots(figsize=(8.27, 4.0))
+    ax.axis("off")
+    ax.set_title("Konfusionsmatrizen – Zählwerte (TN/FP/FN/TP)", fontsize=12, weight="bold", pad=10)
+
+    col_labels = ["modell", "split", "TN", "FP", "FN", "TP"]
+    table = ax.table(
+        cellText=rows,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.1, 1.2)
+
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -627,6 +751,7 @@ def main() -> None:
         add_title_page(pdf, exp_id, exp_config, results)
         add_legend_page(pdf)
         add_model_params_page(pdf, results)
+        add_features_page(pdf, results)
 
         # 2) Datenübersicht
         add_distributions_page(pdf, df)
@@ -637,6 +762,7 @@ def main() -> None:
         add_direction_page(pdf, results)
         add_combined_page(pdf, results)
         add_confusion_pages(pdf, results)
+        add_confusion_tables_page(pdf, results)
         add_feature_importance_pages(pdf, results)
 
     print(f"[ok] Report gespeichert unter: {pdf_path}")
