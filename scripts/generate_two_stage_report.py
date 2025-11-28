@@ -480,19 +480,33 @@ def add_signal_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
     - Balkendiagramm Precision/Recall/F1 für Klasse 'move'
     - Tabellarische Übersicht der Scores pro Split
     """
+    # Schwelle des Signal-Modells falls vorhanden
+    sig_thr = None
+    try:
+        sig_thr = float(results["signal"]["val"].get("threshold"))
+    except Exception:
+        sig_thr = None
+
+    if sig_thr is not None:
+        title_plot = f"Signal-Modell – Kennzahlen für Klasse 'move' (train/val/test, thr={sig_thr:.2f})"
+        title_table = f"Signal-Modell – Tabelle (Klasse 'move', thr={sig_thr:.2f})"
+    else:
+        title_plot = "Signal-Modell – Kennzahlen für Klasse 'move' (train/val/test)"
+        title_table = "Signal-Modell – Tabelle (Klasse 'move')"
+
     _plot_binary_metrics(
         pdf,
         results,
         key="signal",
         pos_label="move",
-        title="Signal-Modell – Kennzahlen für Klasse 'move' (train/val/test)",
+        title=title_plot,
     )
     _add_binary_tables_page(
         pdf,
         results,
         key="signal",
         pos_label="move",
-        title="Signal-Modell – Tabelle (Klasse 'move')",
+        title=title_table,
     )
 
 

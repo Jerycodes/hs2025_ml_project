@@ -1,0 +1,10 @@
+{
+  "exp_id": "v0_h4_thr1pct_strict",
+  "label_params": {
+    "horizon_days": 4,
+    "up_threshold": 0.01,
+    "down_threshold": -0.01,
+    "strict_monotonic": true,
+    "max_adverse_move_pct": null
+  }
+}
