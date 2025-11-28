@@ -35,6 +35,7 @@ def label_eurusd(
     down_threshold: float = -0.01,
     strict_monotonic: bool = True,
     max_adverse_move_pct: float | None = None,
+    hit_within_horizon: bool = False,
 ) -> pd.DataFrame:
     """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze.
 
@@ -61,6 +62,19 @@ def label_eurusd(
 
         Wenn ``max_adverse_move_pct`` = None, wird kein zusaetzlicher
         Adverse-Move-Filter angewendet.
+    - hit_within_horizon:
+        Steuerung der Treffer-Logik fuer up/down.
+
+        False (Standard, v-/nv-Serien):
+            up/down wird nur vergeben, wenn der Schlusskurs am Horizont-Tag
+            t+horizon_days die jeweilige Schwelle erreicht/ueberschreitet
+            (also wie in der eingangs beschriebenen Standard-Logik).
+
+        True (neue Experiment-Serien):
+            up/down wird bereits vergeben, wenn **irgendwo** innerhalb des
+            Fensters [t, t+horizon_days] die Schwelle einmal erreicht oder
+            ueberschritten (up) bzw. unterschritten (down) wird. Damit wird
+            eher die Logik eines Take-Profit-Treffers abgebildet.
     """
 
     # Rohdaten laden und chronologisch sortieren
@@ -96,58 +110,67 @@ def label_eurusd(
     n = len(close)
     mono_up = np.full(n, False)
     mono_down = np.full(n, False)
+    hit_up = np.full(n, False)
+    hit_down = np.full(n, False)
 
-    # Wenn weder Monotonie noch Adverse-Move-Filter gesetzt sind,
-    # sind alle Pfade formal "erlaubt".
-    if not strict_monotonic and max_adverse_move_pct is None:
-        mono_up[:] = True
-        mono_down[:] = True
-    else:
-        for i in range(n):
-            end = i + horizon_days
-            if end >= n:
-                # Am Ende der Zeitreihe gibt es nicht mehr genug Zukunftsdaten.
-                continue
+    for i in range(n):
+        end = i + horizon_days
+        if end >= n:
+            # Am Ende der Zeitreihe gibt es nicht mehr genug Zukunftsdaten.
+            continue
 
-            segment = close[i : end + 1]  # Werte von t bis t+horizon_days
-            start = segment[0]
+        segment = close[i : end + 1]  # Werte von t bis t+horizon_days
+        start = segment[0]
 
-            # 1) Monotonie-Bedingung (falls aktiviert)
-            if strict_monotonic:
-                diffs = np.diff(segment)
-                up_ok_monotonic = np.all(diffs > 0)
-                down_ok_monotonic = np.all(diffs < 0)
-            else:
-                up_ok_monotonic = True
-                down_ok_monotonic = True
+        # 1) Monotonie-Bedingung (falls aktiviert)
+        if strict_monotonic:
+            diffs = np.diff(segment)
+            up_ok_monotonic = np.all(diffs > 0)
+            down_ok_monotonic = np.all(diffs < 0)
+        else:
+            up_ok_monotonic = True
+            down_ok_monotonic = True
 
-            # 2) Adverse-Move-Bedingung (falls aktiviert)
-            if max_adverse_move_pct is not None:
-                min_seg = segment.min()
-                max_seg = segment.max()
-                up_ok_adverse = min_seg >= start * (1 - max_adverse_move_pct)
-                down_ok_adverse = max_seg <= start * (1 + max_adverse_move_pct)
-            else:
-                up_ok_adverse = True
-                down_ok_adverse = True
+        # 2) Adverse-Move-Bedingung (falls aktiviert)
+        if max_adverse_move_pct is not None:
+            min_seg = segment.min()
+            max_seg = segment.max()
+            up_ok_adverse = min_seg >= start * (1 - max_adverse_move_pct)
+            down_ok_adverse = max_seg <= start * (1 + max_adverse_move_pct)
+        else:
+            up_ok_adverse = True
+            down_ok_adverse = True
 
-            mono_up[i] = up_ok_monotonic and up_ok_adverse
-            mono_down[i] = down_ok_monotonic and down_ok_adverse
+        mono_up[i] = up_ok_monotonic and up_ok_adverse
+        mono_down[i] = down_ok_monotonic and down_ok_adverse
+
+        # 3) Treffer irgendwo im Horizont (optional genutzt, wenn
+        #    hit_within_horizon=True gesetzt ist).
+        max_seg = segment.max()
+        min_seg = segment.min()
+        hit_up[i] = max_seg >= start * (1 + up_threshold)
+        hit_down[i] = min_seg <= start * (1 + down_threshold)
 
     # Schwellenwerte anwenden, um Labels zu vergeben:
     # Startwert fuer alle Tage ist neutral.
     labels = pd.Series("neutral", index=df.index)
+    mono_up_series = pd.Series(mono_up, index=df.index)
+    mono_down_series = pd.Series(mono_down, index=df.index)
 
-    # Bedingungen fuer up:
-    # 1) Endrendite ist stark genug positiv.
-    # 2) Der Pfad ist streng steigend (oder Monotonie ist deaktiviert).
-    up_mask = (returns >= up_threshold) & pd.Series(mono_up, index=df.index)
+    if hit_within_horizon:
+        # Alternative Logik: Schwelle muss irgendwann innerhalb des
+        # Pfades [t, t+horizon_days] getroffen werden.
+        hit_up_series = pd.Series(hit_up, index=df.index)
+        hit_down_series = pd.Series(hit_down, index=df.index)
+
+        up_mask = hit_up_series & mono_up_series
+        down_mask = hit_down_series & mono_down_series
+    else:
+        # Standard: Endrendite am Horizonttag entscheidet.
+        up_mask = (returns >= up_threshold) & mono_up_series
+        down_mask = (returns <= down_threshold) & mono_down_series
+
     labels.loc[up_mask] = "up"
-
-    # Bedingungen fuer down:
-    # 1) Endrendite ist stark genug negativ.
-    # 2) Der Pfad ist streng fallend (oder Monotonie ist deaktiviert).
-    down_mask = (returns <= down_threshold) & pd.Series(mono_down, index=df.index)
     labels.loc[down_mask] = "down"
 
     # Ergebnis zusammenbauen und Zeilen ohne Zukunftswerte entfernen

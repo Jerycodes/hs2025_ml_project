@@ -168,6 +168,29 @@ def load_predictions(project_root: Path, exp_id: str) -> pd.DataFrame | None:
     return None
 
 
+def load_fx_labels_for_exp(project_root: Path, exp_id: str) -> pd.DataFrame | None:
+    """Lädt die FX-Labels (inkl. Close) für ein Experiment.
+
+    Bevorzugt die Varianten-Datei ``eurusd_labels__<EXP_ID>.csv``,
+    fällt ansonsten auf die aktuelle Standarddatei zurück.
+    """
+    base_dir = project_root / "data" / "processed" / "fx"
+    safe_id = exp_id.replace(" ", "_")
+    candidates = [
+        base_dir / f"eurusd_labels__{safe_id}.csv",
+        base_dir / "eurusd_labels.csv",
+    ]
+    for path in candidates:
+        if path.is_file():
+            df = pd.read_csv(path, parse_dates=["Date"])
+            df = df.sort_values("Date").set_index("Date")
+            return df
+
+    print(f"[warn] Keine FX-Label-Datei für EXP_ID='{exp_id}' gefunden – "
+          "Tradesimulation wird übersprungen.")
+    return None
+
+
 def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], results: Dict[str, Any]) -> None:
     """Fügt eine Titelseite mit den wichtigsten Metadaten und einer Kurzbeschreibung hinzu."""
     cfg = results.get("config", {})
@@ -219,6 +242,14 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     write(f"- up_threshold: {label_params.get('up_threshold')}")
     write(f"- down_threshold: {label_params.get('down_threshold')}")
     write(f"- strict_monotonic: {label_params.get('strict_monotonic')}")
+    if "max_adverse_move_pct" in label_params:
+        write(f"- max_adverse_move_pct: {label_params.get('max_adverse_move_pct')}")
+    if "hit_within_horizon" in label_params:
+        write(
+            "- hit_within_horizon: "
+            f"{label_params.get('hit_within_horizon')} "
+            "(True = Schwelle reicht, wenn sie irgendwo im Horizont erreicht wird)"
+        )
     y -= line_height
 
     write("Datensatz & Splits:", bold=True)
@@ -227,6 +258,23 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     write(f"- test_start: {cfg.get('test_start')}")
     write(f"- train_frac_within_pretest: {cfg.get('train_frac_within_pretest')}")
     y -= line_height
+
+    # Schwellwerte / Entscheidungsgrenzen dokumentieren
+    signal_thr = cfg.get("signal_threshold")
+    dir_thr = cfg.get("direction_threshold")
+    if (signal_thr is not None) or (dir_thr is not None):
+        write("Entscheidungsgrenzen (Modelle):", bold=True)
+        if signal_thr is not None:
+            write(
+                f"- SIGNAL_THRESHOLD (Stufe 1 – move vs. neutral): {signal_thr} "
+                "(höher → höhere Precision, niedrigerer Recall)."
+            )
+        if dir_thr is not None:
+            write(
+                f"- DIRECTION_THRESHOLD (Stufe 2 – down vs. up): {dir_thr} "
+                "(niedriger → mehr up, höher → weniger up)."
+            )
+        y -= line_height
 
     # Hinweis auf die verwendeten Features; die vollständige Liste ist
     # auf einer separaten Feature-Seite untergebracht, damit auf der
@@ -678,7 +726,7 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
 
     # ---------------- Kombiniert: neutral / up / down (Test) -------------------
     cm_combined = np.array(results["combined_test"]["confusion_matrix"])
-    fig, ax = plt.subplots(figsize=(4.5, 4.5))
+    fig, ax = plt.subplots(figsize=(4.5, 4.0))
     sns.heatmap(
         cm_combined,
         annot=True,
@@ -691,11 +739,13 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     ax.set_title("Confusion Matrix – Test (neutral / up / down)")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    plt.tight_layout(rect=(0.02, 0.10, 0.98, 0.95))
+    # etwas Platz am unteren Rand für eine zweizeilige Caption lassen
+    plt.tight_layout(rect=(0.02, 0.14, 0.98, 0.95))
     fig.text(
         0.01,
-        0.02,
-        "Abbildung: Confusion-Matrix des kombinierten Modells (neutral/up/down) auf dem Test-Split.",
+        0.03,
+        "Abbildung: Confusion-Matrix des kombinierten Modells (neutral/up/down)\n"
+        "auf dem Test-Split.",
         fontsize=8,
     )
     pdf.savefig(fig)
@@ -727,25 +777,33 @@ def add_confusion_tables_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
     if not rows:
         return
 
-    fig, ax = plt.subplots(figsize=(8.27, 4.0))
+    fig, ax = plt.subplots(figsize=(8.27, 3.5))
     ax.axis("off")
-    ax.set_title("Konfusionsmatrizen – Zählwerte (TN/FP/FN/TP)", fontsize=12, weight="bold", pad=10)
+    ax.set_title(
+        "Konfusionsmatrizen – Zählwerte (TN/FP/FN/TP)",
+        fontsize=12,
+        weight="bold",
+        pad=10,
+    )
 
     col_labels = ["modell", "split", "TN", "FP", "FN", "TP"]
+    # Spaltenbreiten leicht begrenzen, damit die Tabelle komplett auf die Seite passt.
+    col_widths = [0.14, 0.14, 0.12, 0.12, 0.12, 0.12]
     table = ax.table(
         cellText=rows,
         colLabels=col_labels,
         loc="center",
         cellLoc="center",
+        colWidths=col_widths,
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9)
-    table.scale(1.3, 1.3)
-
+    # Etwas kleiner skalieren, damit links/rechts nichts abgeschnitten wird.
+    table.scale(1.1, 1.3)
     fig.text(
         0.01,
-        0.02,
-        "Tabelle: Zählwerte der Konfusionsmatrizen (TN/FP/FN/TP) "
+        0.03,
+        "Tabelle: Zählwerte der Konfusionsmatrizen (TN/FP/FN/TP)\n"
         "für Signal- und Richtungs-Modell je Split.",
         fontsize=8,
     )
@@ -834,6 +892,273 @@ def add_misclassification_summary_page(pdf: PdfPages, preds: pd.DataFrame) -> No
         0.02,
         "Tabelle: Zusammenfassung der wichtigsten False-Positive-Fälle "
         "für kombinierten Test (neutral/up/down) und Signal-Test (neutral vs move).",
+        fontsize=8,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _compute_trade_return(
+    date: pd.Timestamp,
+    pred_label: str,
+    true_label: str,
+    fx_df: pd.DataFrame,
+    label_params: Dict[str, Any],
+) -> float:
+    """Berechnet die prozentuale Rendite eines Trades (ohne Einsatz).
+
+    Konvention:
+    - Return ist relativ zum Einstiegskurs (z. B. 0.01 = +1 %).
+    - Bei neutraler Vorhersage (pred_label='neutral') wird 0.0 zurückgegeben.
+    - Wenn true_label='neutral' und eine Position eröffnet wird, wird
+      konservativ angenommen, dass der Stop-Loss getroffen wird.
+    """
+    pred_label = str(pred_label)
+    true_label = str(true_label)
+
+    if pred_label == "neutral":
+        return 0.0
+
+    horizon = int(label_params.get("horizon_days", 4))
+    up_thr = float(label_params.get("up_threshold", 0.0))
+    down_thr = float(label_params.get("down_threshold", 0.0))
+    max_adv = label_params.get("max_adverse_move_pct", 0.01) or 0.01
+
+    # worst case für Trades auf eigentlich neutrale Tage: Stop-Loss
+    if true_label == "neutral":
+        return -float(max_adv)
+
+    try:
+        idx = fx_df.index.get_loc(date)
+    except KeyError:
+        return 0.0
+
+    if idx + horizon >= len(fx_df):
+        return 0.0
+
+    segment = fx_df["Close"].iloc[idx : idx + horizon + 1].to_numpy()
+    entry = segment[0]
+
+    if pred_label == "up":
+        sl_level = entry * (1 - max_adv)
+        tp_level = entry * (1 + up_thr)
+        for price in segment[1:]:
+            if price <= sl_level:
+                return -float(max_adv)
+            if price >= tp_level:
+                return float(up_thr)
+        # kein TP/SL innerhalb des Fensters: Return am Horizontende
+        return float((segment[-1] - entry) / entry)
+
+    if pred_label == "down":
+        sl_level = entry * (1 + max_adv)
+        tp_level = entry * (1 + down_thr)
+        for price in segment[1:]:
+            if price >= sl_level:
+                return -float(max_adv)
+            if price <= tp_level:
+                # down_thr ist negativ -> Gewinn ist -down_thr (positiv)
+                return float(-down_thr)
+        # kein TP/SL innerhalb des Fensters: Return am Horizontende
+        return float((entry - segment[-1]) / entry)
+
+    # Fallback (sollte praktisch nicht vorkommen)
+    return 0.0
+
+
+def add_trade_simulation_pages(
+    pdf: PdfPages,
+    preds: pd.DataFrame,
+    fx_df: pd.DataFrame,
+    exp_config: Dict[str, Any],
+) -> None:
+    """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein."""
+    label_params = exp_config.get("label_params", {})
+
+    df = preds.copy().sort_values("date")
+
+    # Trade-Return (in %) pro Tag
+    df["trade_return"] = [
+        _compute_trade_return(dt, pred, true, fx_df, label_params)
+        for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+    ]
+
+    # Strategie A: fixer Einsatz (200 CHF bei up, 100 CHF bei down)
+    df["stake_fixed"] = np.where(
+        df["combined_pred"] == "up",
+        200.0,
+        np.where(df["combined_pred"] == "down", 100.0, 0.0),
+    )
+    df["pnl_fixed"] = df["stake_fixed"] * df["trade_return"]
+
+    trades_mask = df["stake_fixed"] > 0
+    trades_df = df[trades_mask]
+
+    total_pnl_fixed = trades_df["pnl_fixed"].sum()
+    n_trades = int(trades_mask.sum())
+    n_up_trades = int((trades_df["combined_pred"] == "up").sum())
+    n_down_trades = int((trades_df["combined_pred"] == "down").sum())
+    n_win = int((trades_df["pnl_fixed"] > 0).sum())
+    n_loss = int((trades_df["pnl_fixed"] < 0).sum())
+
+    # Strategie B: 10 % des Vermögens je Trade
+    start_capital = 1000.0
+    frac = 0.10
+    capital_before = []
+    capital_after = []
+    capital = start_capital
+    pnl_b = []
+    for r, stake in zip(df["trade_return"], df["stake_fixed"]):
+        capital_before.append(capital)
+        if stake > 0:
+            new_capital = capital * (1.0 + frac * r)
+            pnl_b.append(new_capital - capital)
+            capital = new_capital
+        else:
+            pnl_b.append(0.0)
+        capital_after.append(capital)
+    df["capital_before"] = capital_before
+    df["capital_after"] = capital_after
+    df["pnl_b"] = pnl_b
+    final_capital = float(capital)
+    min_capital = float(min(capital_after) if capital_after else start_capital)
+
+    # Strategie A mit Hebel 20: P&L skaliert mit Faktor 20
+    df["pnl_fixed_lev20"] = df["pnl_fixed"] * 20.0
+    total_pnl_fixed_lev20 = trades_df["pnl_fixed_lev20"].sum()
+
+    # Kostenmatrizen für Strategie A (fixer Einsatz, ohne Hebel)
+    labels_order = ["neutral", "up", "down"]
+    cost_total_rows = []
+    cost_mean_rows = []
+    for true_lab in labels_order:
+        for pred_lab in labels_order:
+            mask = (df["label_true"] == true_lab) & (df["combined_pred"] == pred_lab)
+            cnt = int(mask.sum())
+            total = float(df.loc[mask, "pnl_fixed"].sum())
+            mean = float(total / cnt) if cnt > 0 else 0.0
+            cost_total_rows.append([true_lab, pred_lab, cnt, total])
+            cost_mean_rows.append([true_lab, pred_lab, mean])
+
+    cost_total = pd.DataFrame(
+        cost_total_rows, columns=["label_true", "combined_pred", "count", "sum_chf"]
+    )
+    cost_mean = pd.DataFrame(
+        cost_mean_rows, columns=["label_true", "combined_pred", "mean_chf"]
+    )
+
+    # Seite 1: Zusammenfassung beider Strategien
+    summary_rows = [
+        ["Strategy", "Kennzahl", "Wert"],
+        ["A (fixer Einsatz)", "Anzahl Trades", n_trades],
+        ["A (fixer Einsatz)", "Trades up / down", f"{n_up_trades} / {n_down_trades}"],
+        ["A (fixer Einsatz)", "Gewinner / Verlierer", f"{n_win} / {n_loss}"],
+        ["A (fixer Einsatz)", "Gesamt-P&L (CHF)", f"{total_pnl_fixed:.2f}"],
+        ["A (fixer Einsatz, Hebel 20)", "Gesamt-P&L (CHF)", f"{total_pnl_fixed_lev20:.2f}"],
+        ["B (10% vom Kapital)", "Startkapital (CHF)", f"{start_capital:.2f}"],
+        ["B (10% vom Kapital)", "Endkapital (CHF)", f"{final_capital:.2f}"],
+        ["B (10% vom Kapital)", "Minimum Kapital (CHF)", f"{min_capital:.2f}"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(8.27, 3.5))
+    ax.axis("off")
+    ax.set_title("Tradesimulation – Strategien A und B (Test-Split)", fontsize=12, weight="bold", pad=10)
+
+    table = ax.table(
+        cellText=summary_rows[1:],
+        colLabels=summary_rows[0],
+        loc="center",
+        cellLoc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1.1, 1.2)
+
+    fig.text(
+        0.01,
+        0.03,
+        "Tabelle: Zusammenfassung der Tradesimulation auf dem Test-Split.\n"
+        "Strategie A: fixer Einsatz pro Trade (up/down). "
+        "Strategie B: 10 % des aktuellen Vermögens pro Trade.",
+        fontsize=8,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 2: Kostenmatrix – durchschnittliche Kosten pro Fall (Strategie A)
+    if not cost_mean.empty:
+        fig, ax = plt.subplots(figsize=(8.27, 3.5))
+        ax.axis("off")
+        ax.set_title(
+            "Kostenmatrix – durchschnittliche Kosten pro Fall (Strategie A, Test-Split)",
+            fontsize=12,
+            weight="bold",
+            pad=10,
+        )
+
+        mean_table = ax.table(
+            cellText=cost_mean.values,
+            colLabels=cost_mean.columns.tolist(),
+            loc="center",
+            cellLoc="center",
+        )
+        mean_table.auto_set_font_size(False)
+        mean_table.set_fontsize(8)
+        mean_table.scale(1.1, 1.2)
+
+        fig.text(
+            0.01,
+            0.03,
+            "Tabelle: durchschnittliche Kosten (CHF) pro Fall für jede Kombination\n"
+            "aus wahrem Label und vorhergesagtem Label (Strategie A, fixer Einsatz).",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # Seite 3: Kostenmatrix – Gesamtkosten und Anzahl Trades (Strategie A)
+    if not cost_total.empty:
+        fig, ax = plt.subplots(figsize=(8.27, 3.5))
+        ax.axis("off")
+        ax.set_title(
+            "Kostenmatrix – Gesamtkosten und Anzahl Trades (Strategie A, Test-Split)",
+            fontsize=12,
+            weight="bold",
+            pad=10,
+        )
+
+        total_table = ax.table(
+            cellText=cost_total.values,
+            colLabels=cost_total.columns.tolist(),
+            loc="center",
+            cellLoc="center",
+        )
+        total_table.auto_set_font_size(False)
+        total_table.set_fontsize(8)
+        total_table.scale(1.1, 1.2)
+
+        fig.text(
+            0.01,
+            0.03,
+            "Tabelle: Anzahl Fälle und Gesamt-P&L (CHF) auf dem Test-Split\n"
+            "für jede Kombination aus wahrem Label und vorhergesagtem Label (Strategie A).",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # Seite 4: Verlauf des Kapitals für Strategie B (Equity Curve)
+    fig, ax = plt.subplots(figsize=(8.27, 3.5))
+    ax.plot(df["date"], df["capital_after"], label="Kapitalverlauf")
+    ax.set_title("Strategie B – Verlauf des Kapitals (Test-Split)", fontsize=12, weight="bold")
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("Kapital (CHF)")
+    ax.grid(alpha=0.3)
+    fig.text(
+        0.01,
+        0.03,
+        "Abbildung: Equity Curve für Strategie B (10 % des aktuellen Vermögens pro Trade)\n"
+        "auf dem Test-Split.",
         fontsize=8,
     )
     pdf.savefig(fig)
@@ -1584,6 +1909,10 @@ def main() -> None:
         if preds is not None:
             add_misclassification_summary_page(pdf, preds)
             add_misclassified_neutral_segment_pages(pdf, df, preds, project_root, exp_config, results)
+
+            fx_labels = load_fx_labels_for_exp(project_root, exp_id)
+            if fx_labels is not None:
+                add_trade_simulation_pages(pdf, preds, fx_labels, exp_config)
 
         add_feature_importance_pages(pdf, results)
 
