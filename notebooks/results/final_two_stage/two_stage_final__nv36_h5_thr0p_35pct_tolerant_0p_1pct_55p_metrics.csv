@@ -1,0 +1,7 @@
+model,split,precision_pos,recall_pos,f1_pos
+signal,train,0.0,0.0,0.0
+signal,val,0.0,0.0,0.0
+signal,test,0.0,0.0,0.0
+direction,train,0.8344370860927153,0.5294117647058824,0.6478149100257069
+direction,val,0.64,0.25,0.3595505617977528
+direction,test,0.82,0.47674418604651164,0.6029411764705882
