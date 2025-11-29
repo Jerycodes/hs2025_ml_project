@@ -983,13 +983,16 @@ def add_trade_simulation_pages(
         for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
     ]
 
-    # Strategie A: fixer Einsatz (200 CHF bei up, 100 CHF bei down)
+    # Strategie A: fixer Einsatz (100 CHF bei up, 100 CHF bei down)
     df["stake_fixed"] = np.where(
         df["combined_pred"] == "up",
-        200.0,
+        100.0,
         np.where(df["combined_pred"] == "down", 100.0, 0.0),
     )
     df["pnl_fixed"] = df["stake_fixed"] * df["trade_return"]
+
+    # Strategie A mit Hebel 20: P&L skaliert mit Faktor 20
+    df["pnl_fixed_lev20"] = df["pnl_fixed"] * 20.0
 
     trades_mask = df["stake_fixed"] > 0
     trades_df = df[trades_mask]
@@ -1001,13 +1004,19 @@ def add_trade_simulation_pages(
     n_win = int((trades_df["pnl_fixed"] > 0).sum())
     n_loss = int((trades_df["pnl_fixed"] < 0).sum())
 
-    # Strategie B: 10 % des Vermögens je Trade
+    total_pnl_fixed_lev20 = float(df.loc[trades_mask, "pnl_fixed_lev20"].sum())
+
+    # Strategie B: 10 % des Vermögens je Trade (ohne Hebel)
     start_capital = 1000.0
     frac = 0.10
     capital_before = []
     capital_after = []
     capital = start_capital
     pnl_b = []
+
+    # Strategie B mit Hebel 20: paralleler Kapitalverlauf
+    capital_after_lev20 = []
+    capital_lev20 = start_capital
     for r, stake in zip(df["trade_return"], df["stake_fixed"]):
         capital_before.append(capital)
         if stake > 0:
@@ -1017,15 +1026,18 @@ def add_trade_simulation_pages(
         else:
             pnl_b.append(0.0)
         capital_after.append(capital)
+        # Variante mit Hebel 20: Return wird mit 20 skaliert
+        if stake > 0:
+            capital_lev20 = capital_lev20 * (1.0 + frac * r * 20.0)
+        capital_after_lev20.append(capital_lev20)
     df["capital_before"] = capital_before
     df["capital_after"] = capital_after
     df["pnl_b"] = pnl_b
+    df["capital_after_lev20"] = capital_after_lev20
     final_capital = float(capital)
     min_capital = float(min(capital_after) if capital_after else start_capital)
-
-    # Strategie A mit Hebel 20: P&L skaliert mit Faktor 20
-    df["pnl_fixed_lev20"] = df["pnl_fixed"] * 20.0
-    total_pnl_fixed_lev20 = trades_df["pnl_fixed_lev20"].sum()
+    final_capital_lev20 = float(capital_lev20)
+    min_capital_lev20 = float(min(capital_after_lev20) if capital_after_lev20 else start_capital)
 
     # Kostenmatrizen für Strategie A (fixer Einsatz, ohne Hebel)
     labels_order = ["neutral", "up", "down"]
@@ -1051,6 +1063,7 @@ def add_trade_simulation_pages(
     summary_rows = [
         ["Strategy", "Kennzahl", "Wert"],
         ["A (fixer Einsatz)", "Anzahl Trades", n_trades],
+        ["A (fixer Einsatz)", "Einsatz up / down (CHF)", "100 / 100"],
         ["A (fixer Einsatz)", "Trades up / down", f"{n_up_trades} / {n_down_trades}"],
         ["A (fixer Einsatz)", "Gewinner / Verlierer", f"{n_win} / {n_loss}"],
         ["A (fixer Einsatz)", "Gesamt-P&L (CHF)", f"{total_pnl_fixed:.2f}"],
@@ -1058,6 +1071,8 @@ def add_trade_simulation_pages(
         ["B (10% vom Kapital)", "Startkapital (CHF)", f"{start_capital:.2f}"],
         ["B (10% vom Kapital)", "Endkapital (CHF)", f"{final_capital:.2f}"],
         ["B (10% vom Kapital)", "Minimum Kapital (CHF)", f"{min_capital:.2f}"],
+        ["B (10% vom Kapital, Hebel 20)", "Endkapital (CHF)", f"{final_capital_lev20:.2f}"],
+        ["B (10% vom Kapital, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_lev20:.2f}"],
     ]
 
     fig, ax = plt.subplots(figsize=(8.27, 3.5))
@@ -1078,8 +1093,8 @@ def add_trade_simulation_pages(
         0.01,
         0.03,
         "Tabelle: Zusammenfassung der Tradesimulation auf dem Test-Split.\n"
-        "Strategie A: fixer Einsatz pro Trade (up/down). "
-        "Strategie B: 10 % des aktuellen Vermögens pro Trade.",
+        "Strategie A: fixer Einsatz pro Trade (100 CHF bei up, 100 CHF bei down).\n"
+        "Strategie B: 10 % des aktuellen Vermögens pro Trade (optional mit Hebel 20).",
         fontsize=8,
     )
     pdf.savefig(fig)
@@ -1149,16 +1164,39 @@ def add_trade_simulation_pages(
 
     # Seite 4: Verlauf des Kapitals für Strategie B (Equity Curve)
     fig, ax = plt.subplots(figsize=(8.27, 3.5))
-    ax.plot(df["date"], df["capital_after"], label="Kapitalverlauf")
+    ax.plot(df["date"], df["capital_after"], label="ohne Hebel", color="#4c72b0")
+    ax.plot(df["date"], df["capital_after_lev20"], label="mit Hebel 20", color="#c44e52", linestyle="--")
     ax.set_title("Strategie B – Verlauf des Kapitals (Test-Split)", fontsize=12, weight="bold")
     ax.set_xlabel("Datum")
     ax.set_ylabel("Kapital (CHF)")
+    ax.legend()
     ax.grid(alpha=0.3)
     fig.text(
         0.01,
         0.03,
         "Abbildung: Equity Curve für Strategie B (10 % des aktuellen Vermögens pro Trade)\n"
         "auf dem Test-Split.",
+        fontsize=8,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 5: kumulierter P&L für Strategie A (fixer Einsatz)
+    fig, ax = plt.subplots(figsize=(8.27, 3.5))
+    cum_pnl_a = df["pnl_fixed"].cumsum()
+    cum_pnl_a_lev20 = df["pnl_fixed_lev20"].cumsum()
+    ax.plot(df["date"], cum_pnl_a, label="ohne Hebel", color="#4c72b0")
+    ax.plot(df["date"], cum_pnl_a_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--")
+    ax.set_title("Strategie A – kumulierter P&L (Test-Split)", fontsize=12, weight="bold")
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("P&L (CHF)")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.text(
+        0.01,
+        0.03,
+        "Abbildung: kumulierter Gewinn/Verlust für Strategie A (fixer Einsatz)\n"
+        "mit und ohne Hebel 20 auf dem Test-Split.",
         fontsize=8,
     )
     pdf.savefig(fig)
