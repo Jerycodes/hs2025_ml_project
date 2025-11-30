@@ -101,6 +101,24 @@ def add_eurusd_features(df: pd.DataFrame) -> pd.DataFrame:
         df["body_pct"].rolling(window=30, min_periods=30).mean()
     )
 
+    # Kerzenform-Intensität: Verhältnis von Body zu gesamter Tagesrange
+    eps = 1e-6
+    df["price_body_vs_range"] = df["body_pct"].abs() / (
+        df["intraday_range_pct"].abs() + eps
+    )
+    df["price_body_vs_range_5d_mean"] = (
+        df["price_body_vs_range"].rolling(window=5, min_periods=5).mean()
+    )
+
+    # Schatten-Balance: Überwiegt oberer oder unterer Schatten?
+    if "upper_shadow" in df.columns and "lower_shadow" in df.columns:
+        df["price_shadow_balance"] = (df["upper_shadow"] - df["lower_shadow"]) / (
+            df["upper_shadow"] + df["lower_shadow"] + eps
+        )
+        df["price_shadow_balance_5d_mean"] = (
+            df["price_shadow_balance"].rolling(window=5, min_periods=5).mean()
+        )
+
     # ---------- News-Historie / -Intensität (news_...) ----------
     df["news_article_count_3d_sum"] = (
         df["article_count"].rolling(window=3, min_periods=3).sum()
