@@ -150,6 +150,98 @@ def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
     return merged
 
 
+def build_price_only_training_dataframe_from_labels(exp_id: str | None = None) -> pd.DataFrame:
+    """Baut einen Trainings-DataFrame nur aus FX-Labels (ohne News-Merge).
+
+    Die Struktur orientiert sich an ``build_training_dataframe``, damit
+    das Trainings-Notebook denselben Pfad benutzen kann, aber alle
+    News-abhängigen Features werden später im Price-only-Modus
+    aus ``feature_cols`` herausgefiltert.
+    """
+    labels = load_labels(exp_id=exp_id)
+    merged = labels.copy()
+
+    # Zielvariablen wie im Standard-DataFrame
+    merged["signal"] = (merged["label"] != "neutral").astype(int)
+    direction_map = {"down": 0, "up": 1}
+    merged["direction"] = merged["label"].map(direction_map)
+
+    # Kalender-Features
+    merged["month"] = merged["date"].dt.month
+    iso = merged["date"].dt.isocalendar()
+    merged["week"] = iso.week.astype(int)
+    merged["quarter"] = merged["date"].dt.quarter
+
+    # Preisbasierte Tagesfeatures
+    merged["intraday_range"] = merged["High"] - merged["Low"]
+    merged["intraday_range_pct"] = merged["intraday_range"] / merged["Close"]
+    merged["body"] = merged["Close"] - merged["Open"]
+    merged["body_pct"] = merged["body"] / merged["Close"]
+    merged["upper_shadow"] = merged["High"] - merged[["Open", "Close"]].max(axis=1)
+    merged["lower_shadow"] = merged[["Open", "Close"]].min(axis=1) - merged["Low"]
+
+    # Stub-News-Spalten, damit add_eurusd_features funktionieren kann.
+    merged["article_count"] = 0.0
+    merged["avg_polarity"] = 0.0
+    merged["avg_neg"] = 0.0
+    merged["avg_neu"] = 1.0
+    merged["avg_pos"] = 0.0
+
+    sentiment_denom = (merged["avg_pos"] + merged["avg_neg"]).replace(0, 1e-6)
+    merged["pos_share"] = merged["avg_pos"] / sentiment_denom
+    merged["neg_share"] = merged["avg_neg"] / sentiment_denom
+
+    merged = add_eurusd_features(merged)
+
+    cols = [
+        "date",
+        "label",
+        "signal",
+        "direction",
+        "month",
+        "week",
+        "quarter",
+        "intraday_range",
+        "intraday_range_pct",
+        "body",
+        "body_pct",
+        "upper_shadow",
+        "lower_shadow",
+        "pos_share",
+        "neg_share",
+        "price_close_ret_1d",
+        "price_close_ret_5d",
+        "price_range_pct_5d_std",
+        "price_body_pct_5d_mean",
+        "price_close_ret_30d",
+        "price_range_pct_30d_std",
+        "price_body_pct_30d_mean",
+        "news_article_count_3d_sum",
+        "news_article_count_7d_sum",
+        "news_pos_share_5d_mean",
+        "news_neg_share_5d_mean",
+        "news_article_count_lag1",
+        "news_pos_share_lag1",
+        "news_neg_share_lag1",
+        "cal_dow",
+        "cal_day_of_month",
+        "cal_is_monday",
+        "cal_is_friday",
+        "cal_is_month_start",
+        "cal_is_month_end",
+        "hol_is_us_federal_holiday",
+        "hol_is_day_before_us_federal_holiday",
+        "hol_is_day_after_us_federal_holiday",
+        "lookahead_return",
+        "article_count",
+        "avg_polarity",
+        "avg_neg",
+        "avg_neu",
+        "avg_pos",
+    ]
+    merged = merged[cols]
+    return merged
+
 def save_training_dataframe(df: pd.DataFrame, path: Path | None = None) -> Path:
     """Speichert das Training-CSV unter data/processed/datasets/."""
     if path is None:

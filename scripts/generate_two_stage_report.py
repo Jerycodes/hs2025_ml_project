@@ -267,15 +267,27 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
 
     # Schwellwerte / Entscheidungsgrenzen dokumentieren
     signal_thr = cfg.get("signal_threshold")
+    signal_thr_trade = cfg.get("signal_threshold_trade")
     dir_thr = cfg.get("direction_threshold")
     dir_thr_down = cfg.get("direction_threshold_down")
     dir_thr_up = cfg.get("direction_threshold_up")
-    if (signal_thr is not None) or (dir_thr is not None) or (dir_thr_down is not None) or (dir_thr_up is not None):
+    if (
+        (signal_thr is not None)
+        or (signal_thr_trade is not None)
+        or (dir_thr is not None)
+        or (dir_thr_down is not None)
+        or (dir_thr_up is not None)
+    ):
         write("Entscheidungsgrenzen (Modelle):", bold=True)
         if signal_thr is not None:
             write(
                 f"- SIGNAL_THRESHOLD (Stufe 1 – move vs. neutral): {signal_thr} "
                 "(höher → höhere Precision, niedrigerer Recall)."
+            )
+        if signal_thr_trade is not None:
+            write(
+                f"- SIGNAL_THRESHOLD_TRADE (Stufe 1 – Trading): {signal_thr_trade} "
+                "(höher → weniger Trades, tendenziell höhere Qualität)."
             )
         if dir_thr is not None:
             write(
@@ -1451,6 +1463,61 @@ def add_price_with_labels_page(
     plt.close(fig)
 
 
+def add_price_with_splits_page(
+    pdf: PdfPages,
+    df: pd.DataFrame,
+    project_root: Path,
+    exp_config: Dict[str, Any],
+    results: Dict[str, Any],
+) -> None:
+    """Fügt eine Seite mit der kompletten Preiszeitreihe + Train/Val/Test-Markierungen hinzu."""
+    cfg = results.get("config", {})
+    test_start = pd.to_datetime(cfg.get("test_start"))
+    train_frac = float(cfg.get("train_frac_within_pretest", 0.8))
+
+    # Sicherstellen, dass Close-Kurse vorhanden sind
+    df_plot = _ensure_close_with_labels(df, project_root, exp_config)
+
+    # Splits nach derselben Logik wie beim Training rekonstruieren
+    splits = split_train_val_test(df_plot, test_start, train_frac)
+    train_df = splits["train"]
+    val_df = splits["val"]
+    test_df = splits["test"]
+
+    train_end = train_df["date"].max()
+    val_end = val_df["date"].max()
+    test_begin = test_df["date"].min()
+
+    fig, ax = plt.subplots(figsize=(10, 3.5))
+    ax.plot(df_plot["date"], df_plot["Close"], color="lightgray", label="Close")
+
+    # Hintergründe für Train / Val / Test
+    ymin, ymax = ax.get_ylim()
+    ax.axvspan(df_plot["date"].min(), train_end, color="#d9f0d3", alpha=0.3, label="Train")
+    ax.axvspan(train_end, val_end, color="#fee0b6", alpha=0.3, label="Val")
+    ax.axvspan(test_begin, df_plot["date"].max(), color="#deebf7", alpha=0.3, label="Test")
+
+    ax.set_ylim(ymin, ymax)
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("EURUSD Close")
+    ax.set_title("EURUSD-Zeitreihe mit Train/Val/Test-Bereichen")
+    # Nur einzigartige Labels in der Legende
+    handles, labels = ax.get_legend_handles_labels()
+    uniq = dict(zip(labels, handles))
+    ax.legend(uniq.values(), uniq.keys(), loc="upper left")
+
+    plt.tight_layout()
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: EURUSD-Schlusskurs über den gesamten Zeitraum mit farblich markierten "
+        "Trainings-, Validierungs- und Testphasen.",
+        fontsize=8,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def _ensure_close_with_labels(
     df: pd.DataFrame, project_root: Path, exp_config: Dict[str, Any]
 ) -> pd.DataFrame:
@@ -1944,6 +2011,7 @@ def main() -> None:
         # 2) Datenübersicht
         add_distributions_page(pdf, df)
         add_label_distribution_pages(pdf, df, results)
+        add_price_with_splits_page(pdf, df, project_root, exp_config, results)
         add_price_with_labels_page(pdf, df, project_root, exp_config)
         add_label_segment_pages(pdf, df, project_root, exp_config, results)
 
