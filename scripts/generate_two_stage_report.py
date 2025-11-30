@@ -252,12 +252,18 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
         )
     y -= line_height
 
+    feature_mode = cfg.get("feature_mode")
+
     write("Datensatz & Splits:", bold=True)
     # dataset_path kann sehr lang sein → enger umbrechen
     write(f"- dataset_path: {cfg.get('dataset_path')}", max_width=80)
     write(f"- test_start: {cfg.get('test_start')}")
     write(f"- train_frac_within_pretest: {cfg.get('train_frac_within_pretest')}")
     y -= line_height
+
+    if feature_mode:
+        write(f"- feature_mode: {feature_mode}", max_width=80)
+        y -= line_height
 
     # Schwellwerte / Entscheidungsgrenzen dokumentieren
     signal_thr = cfg.get("signal_threshold")
