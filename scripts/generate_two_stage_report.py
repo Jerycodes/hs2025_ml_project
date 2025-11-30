@@ -262,7 +262,9 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     # Schwellwerte / Entscheidungsgrenzen dokumentieren
     signal_thr = cfg.get("signal_threshold")
     dir_thr = cfg.get("direction_threshold")
-    if (signal_thr is not None) or (dir_thr is not None):
+    dir_thr_down = cfg.get("direction_threshold_down")
+    dir_thr_up = cfg.get("direction_threshold_up")
+    if (signal_thr is not None) or (dir_thr is not None) or (dir_thr_down is not None) or (dir_thr_up is not None):
         write("Entscheidungsgrenzen (Modelle):", bold=True)
         if signal_thr is not None:
             write(
@@ -271,8 +273,13 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
             )
         if dir_thr is not None:
             write(
-                f"- DIRECTION_THRESHOLD (Stufe 2 – down vs. up): {dir_thr} "
+                f"- DIRECTION_THRESHOLD (Stufe 2 – down vs. up, für Metriken): {dir_thr} "
                 "(niedriger → mehr up, höher → weniger up)."
+            )
+        if (dir_thr_down is not None) or (dir_thr_up is not None):
+            write(
+                f"- DIRECTION_THRESHOLDS (Stufe 2 – Trading-Entscheidungen): "
+                f"down, wenn P(up) ≤ {dir_thr_down}, up, wenn P(up) ≥ {dir_thr_up}."
             )
         y -= line_height
 
