@@ -36,6 +36,7 @@ def label_eurusd(
     strict_monotonic: bool = True,
     max_adverse_move_pct: float | None = None,
     hit_within_horizon: bool = False,
+    price_source: str = "yahoo",
 ) -> pd.DataFrame:
     """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze.
 
@@ -75,10 +76,26 @@ def label_eurusd(
             Fensters [t, t+horizon_days] die Schwelle einmal erreicht oder
             ueberschritten (up) bzw. unterschritten (down) wird. Damit wird
             eher die Logik eines Take-Profit-Treffers abgebildet.
+    - price_source:
+        Datenquelle fuer die FX-Preise.
+
+        - \"yahoo\" (Standard): liest data/raw/fx/EURUSDX.csv
+        - \"eodhd\":            liest data/raw/fx/EURUSDX_eodhd.csv
+
+        Weitere Quellen koennen spaeter ergaenzt werden.
     """
 
     # Rohdaten laden und chronologisch sortieren
-    csv_path = DATA_RAW / "fx" / "EURUSDX.csv"
+    if price_source == "yahoo":
+        csv_name = "EURUSDX.csv"
+    elif price_source == "eodhd":
+        csv_name = "EURUSDX_eodhd.csv"
+    else:
+        raise ValueError(
+            f"Unbekannte price_source='{price_source}'. Erwarte 'yahoo' oder 'eodhd'."
+        )
+
+    csv_path = DATA_RAW / "fx" / csv_name
     df = pd.read_csv(csv_path)
 
     # YFinance schreibt Metazeilen ("Price", "Ticker") vor die eigentlichen Daten.

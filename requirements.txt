@@ -27,3 +27,4 @@ yfinance==0.2.66
 xgboost==2.0.3
 scikit-learn==1.5.2
 seaborn==0.13.2
+eodhd
