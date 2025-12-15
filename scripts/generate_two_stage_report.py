@@ -22,7 +22,13 @@ from pathlib import Path
 import textwrap
 from typing import Dict, Any
 
+import matplotlib
+
+# Headless / server-friendly backend (verhindert GUI-Backends, die in manchen Umgebungen crashen).
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
@@ -923,6 +929,175 @@ def add_misclassification_summary_page(pdf: PdfPages, preds: pd.DataFrame) -> No
     plt.close(fig)
 
 
+def _format_date_axis_monthly(ax: plt.Axes) -> None:
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for label in ax.get_xticklabels():
+        label.set_rotation(30)
+        label.set_ha("right")
+
+
+def add_misclassification_timeline_pages(
+    pdf: PdfPages,
+    df: pd.DataFrame,
+    preds: pd.DataFrame,
+    project_root: Path,
+    exp_config: Dict[str, Any],
+    results: Dict[str, Any],
+) -> None:
+    """Zeigt, *wo* Fehlklassifikationen im Testzeitraum liegen (auf der Preis-Zeitachse).
+
+    Seiten:
+    1) Combined-Fehler (true label vs combined_pred) als Marker auf dem Close-Verlauf
+    2) Signal-False-Positives (signal_pred=1, aber true=neutral) als Marker
+    """
+    df_price = _ensure_close_with_labels(df, project_root, exp_config)
+    cfg = results.get("config", {})
+    test_start = pd.to_datetime(cfg.get("test_start"))
+
+    if "date" not in df_price.columns or "Close" not in df_price.columns:
+        return
+
+    df_test = df_price[df_price["date"] >= test_start].copy()
+    preds_local = preds.copy()
+    preds_local["date"] = pd.to_datetime(preds_local["date"])
+    preds_test = preds_local[preds_local["date"] >= test_start].copy()
+    if preds_test.empty:
+        return
+
+    merged = preds_test.merge(df_test[["date", "Close"]], on="date", how="left").dropna(subset=["Close"])
+    if merged.empty:
+        return
+
+    merged["label_true"] = merged["label_true"].astype(str)
+    merged["combined_pred"] = merged["combined_pred"].astype(str)
+
+    # -----------------------------
+    # 1) Combined-Fehler (3 Klassen)
+    # -----------------------------
+    errors = merged[merged["label_true"] != merged["combined_pred"]].copy()
+    if errors.empty:
+        fig, ax = plt.subplots(figsize=(8.27, 3.0))
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            "Keine Fehlklassifikationen im kombinierten Test (neutral/up/down).",
+            ha="center",
+            va="center",
+        )
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Es wurden im Testzeitraum keine Abweichungen zwischen true label und combined_pred gefunden.",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+    else:
+        errors["error_type"] = errors["label_true"] + "→" + errors["combined_pred"]
+        total = len(merged)
+        total_err = len(errors)
+
+        style_map = {
+            "neutral→up": ("#1b9e77", "^"),
+            "neutral→down": ("#d95f02", "v"),
+            "up→neutral": ("#7570b3", "o"),
+            "down→neutral": ("#e7298a", "o"),
+            "up→down": ("#e41a1c", "x"),
+            "down→up": ("#377eb8", "x"),
+        }
+
+        fig, ax = plt.subplots(figsize=(11.69, 5.0))
+        ax.plot(df_test["date"], df_test["Close"], color="lightgray", linewidth=1.2, label="Close (Test)")
+
+        for err_type, group in errors.groupby("error_type"):
+            color, marker = style_map.get(err_type, ("#333333", "x"))
+            ax.scatter(
+                group["date"],
+                group["Close"],
+                s=35,
+                color=color,
+                marker=marker,
+                alpha=0.9,
+                label=f"{err_type} (n={len(group)})",
+            )
+
+        ax.set_title(
+            f"Fehlklassifikationen (combined) im Test – Positionen auf der Preiszeitreihe "
+            f"(n={total_err}/{total} = {total_err/total:.1%})"
+        )
+        ax.set_xlabel("Datum")
+        ax.set_ylabel("Close")
+        _format_date_axis_monthly(ax)
+        ax.legend(loc="upper left", fontsize=8, ncol=2)
+        plt.tight_layout()
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Jede Markierung ist ein Testtag, an dem der kombinierte Output (combined_pred) "
+            "vom true label abweicht. Farben/Marker zeigen den Fehlertyp true→pred.",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # -----------------------------------------
+    # 2) Signal-False-Positives (move statt neutral)
+    # -----------------------------------------
+    if "signal_pred" in merged.columns:
+        merged_sig = merged.copy()
+        merged_sig["signal_pred"] = merged_sig["signal_pred"].astype(int)
+        merged_sig["signal_true"] = np.where(merged_sig["label_true"].isin(["up", "down"]), 1, 0)
+        fp_move = merged_sig[(merged_sig["signal_pred"] == 1) & (merged_sig["signal_true"] == 0)].copy()
+
+        if fp_move.empty:
+            fig, ax = plt.subplots(figsize=(8.27, 3.0))
+            ax.axis("off")
+            ax.text(
+                0.5,
+                0.5,
+                "Keine Signal-False-Positives (move) im Test (true=neutral).",
+                ha="center",
+                va="center",
+            )
+            fig.text(
+                0.01,
+                0.02,
+                "Abbildung: Das Signal-Modell hat im Test keine neutralen Tage fälschlich als 'move' markiert.",
+                fontsize=8,
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+        else:
+            fig, ax = plt.subplots(figsize=(11.69, 4.6))
+            ax.plot(df_test["date"], df_test["Close"], color="lightgray", linewidth=1.2, label="Close (Test)")
+            ax.scatter(
+                fp_move["date"],
+                fp_move["Close"],
+                s=40,
+                color="#e41a1c",
+                marker="x",
+                alpha=0.9,
+                label=f"signal FP: pred=move, true=neutral (n={len(fp_move)})",
+            )
+            ax.set_title("Signal-False-Positives im Test – Positionen auf der Preiszeitreihe")
+            ax.set_xlabel("Datum")
+            ax.set_ylabel("Close")
+            _format_date_axis_monthly(ax)
+            ax.legend(loc="upper left", fontsize=9)
+            plt.tight_layout()
+            fig.text(
+                0.01,
+                0.02,
+                "Abbildung: Markierte Testtage, an denen das Signal-Modell (neutral vs move) "
+                "fälschlich ein Trade-Signal gegeben hat (pred=move), obwohl der Tag im Labeling neutral ist.",
+                fontsize=8,
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+
 def _compute_trade_return(
     date: pd.Timestamp,
     pred_label: str,
@@ -1063,6 +1238,10 @@ def add_trade_simulation_pages(
     min_capital = float(min(capital_after) if capital_after else start_capital)
     final_capital_lev20 = float(capital_lev20)
     min_capital_lev20 = float(min(capital_after_lev20) if capital_after_lev20 else start_capital)
+    # pro-Tag P&L für Strategie B mit Hebel 20
+    prev_cap_lev20 = pd.Series(capital_after_lev20).shift(1).fillna(start_capital).to_numpy()
+    pnl_b_lev20 = (np.array(capital_after_lev20) - prev_cap_lev20).tolist()
+    df["pnl_b_lev20"] = pnl_b_lev20
 
     # Kostenmatrizen für Strategie A (fixer Einsatz, ohne Hebel)
     labels_order = ["neutral", "up", "down"]
@@ -1187,45 +1366,601 @@ def add_trade_simulation_pages(
         pdf.savefig(fig)
         plt.close(fig)
 
-    # Seite 4: Verlauf des Kapitals für Strategie B (Equity Curve)
-    fig, ax = plt.subplots(figsize=(8.27, 3.5))
-    ax.plot(df["date"], df["capital_after"], label="ohne Hebel", color="#4c72b0")
-    ax.plot(df["date"], df["capital_after_lev20"], label="mit Hebel 20", color="#c44e52", linestyle="--")
-    ax.set_title("Strategie B – Verlauf des Kapitals (Test-Split)", fontsize=12, weight="bold")
-    ax.set_xlabel("Datum")
-    ax.set_ylabel("Kapital (CHF)")
-    ax.legend()
-    ax.grid(alpha=0.3)
+    # Seite 4: Strategie A vs B – Kapital (ohne Hebel) + Differenz (unten), damit alles gut lesbar ist.
+    # (Twin-Axis war zu eng, deshalb 2 Subplots auf einer Seite.)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),  # A4 quer, höher für Achsen/Labels
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+    )
+
+    # Strategie A als Kapitalverlauf (Startkapital + kumulierter P&L aus fixer Einsatz-Logik)
+    capital_a = start_capital + df["pnl_fixed"].cumsum()
+    capital_b = df["capital_after"]
+    diff_ba = capital_b - capital_a
+
+    ax_top.plot(
+        df["date"],
+        capital_a,
+        label="Strategie A (fixer Einsatz) – Kapital",
+        color="#4c72b0",
+        linewidth=2.0,
+    )
+    ax_top.plot(
+        df["date"],
+        capital_b,
+        label="Strategie B (10% Kapital) – Kapital",
+        color="#c44e52",
+        linewidth=2.0,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – Verlauf des Kapitals (ohne Hebel, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("Kapital (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=9, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_ba,
+        width=2.0,  # etwas breiter als 1 Tag, damit Balken sichtbarer sind
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+
+    # X-Achse: monatlich, aber nicht zu dicht
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    # Layout: genug Platz unten für X-Ticks + Caption
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
     fig.text(
         0.01,
-        0.03,
-        "Abbildung: Equity Curve für Strategie B (10 % des aktuellen Vermögens pro Trade)\n"
-        "auf dem Test-Split.",
-        fontsize=8,
+        0.02,
+        "Abbildung: Oben Kapitalverlauf (CHF) für Strategie A und B ohne Hebel. "
+        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
+    )
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 5: Strategie A vs B – kumulierter P&L (ohne Hebel, oben) + Differenz (unten)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+        sharex=True,
+    )
+
+    pnl_a = df["pnl_fixed"].cumsum()  # Strategie A: fixer Einsatz
+    pnl_b_cum = df["capital_after"] - start_capital  # Strategie B: 10% Kapital
+    diff_pnl_ba = pnl_b_cum - pnl_a
+
+    ax_top.plot(
+        df["date"],
+        pnl_a,
+        label="Strategie A (fixer Einsatz) – P&L",
+        color="#4c72b0",
+        linewidth=2.0,
+    )
+    ax_top.plot(
+        df["date"],
+        pnl_b_cum,
+        label="Strategie B (10% Kapital) – P&L",
+        color="#c44e52",
+        linewidth=2.0,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – kumulierter P&L (ohne Hebel, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("P&L (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=9, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_pnl_ba,
+        width=2.0,
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L, CHF) für Strategie A und B ohne Hebel. "
+        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
     )
     pdf.savefig(fig)
     plt.close(fig)
 
-    # Seite 5: kumulierter P&L für Strategie A (fixer Einsatz)
-    fig, ax = plt.subplots(figsize=(8.27, 3.5))
-    cum_pnl_a = df["pnl_fixed"].cumsum()
-    cum_pnl_a_lev20 = df["pnl_fixed_lev20"].cumsum()
-    ax.plot(df["date"], cum_pnl_a, label="ohne Hebel", color="#4c72b0")
-    ax.plot(df["date"], cum_pnl_a_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--")
-    ax.set_title("Strategie A – kumulierter P&L (Test-Split)", fontsize=12, weight="bold")
-    ax.set_xlabel("Datum")
-    ax.set_ylabel("P&L (CHF)")
-    ax.legend()
-    ax.grid(alpha=0.3)
+    # Seite 6: kumulierter P&L als Punkte (A vs B, ohne Hebel) + Differenz (unten)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+        sharex=True,
+    )
+    ax_top.scatter(
+        df["date"],
+        pnl_a,
+        label="Strategie A (fixer Einsatz) – kumulierter P&L",
+        color="#4c72b0",
+        s=18,
+        alpha=0.85,
+    )
+    ax_top.scatter(
+        df["date"],
+        pnl_b_cum,
+        label="Strategie B (10% Kapital) – kumulierter P&L",
+        color="#c44e52",
+        s=18,
+        alpha=0.85,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (ohne Hebel, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("P&L (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=10, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_pnl_ba,
+        width=2.0,
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
     fig.text(
         0.01,
-        0.03,
-        "Abbildung: kumulierter Gewinn/Verlust für Strategie A (fixer Einsatz)\n"
-        "mit und ohne Hebel 20 auf dem Test-Split.",
-        fontsize=8,
+        0.02,
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L) als Punkte. Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
     )
     pdf.savefig(fig)
     plt.close(fig)
+
+    # Seite 7: Strategie A vs B – Kapital (Hebel 20) + Differenz (unten)
+    capital_a_lev20 = start_capital + df["pnl_fixed_lev20"].cumsum()
+    capital_b_lev20 = df["capital_after_lev20"]
+    diff_ba_lev20 = capital_b_lev20 - capital_a_lev20
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+        sharex=True,
+    )
+    ax_top.plot(
+        df["date"],
+        capital_a_lev20,
+        label="Strategie A (fixer Einsatz) – Kapital (Hebel 20)",
+        color="#4c72b0",
+        linewidth=2.0,
+    )
+    ax_top.plot(
+        df["date"],
+        capital_b_lev20,
+        label="Strategie B (10% Kapital) – Kapital (Hebel 20)",
+        color="#c44e52",
+        linewidth=2.0,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – Verlauf des Kapitals (Hebel 20, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("Kapital (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=9, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_ba_lev20,
+        width=2.0,
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: Oben Kapitalverlauf (CHF) für Strategie A und B mit Hebel 20. "
+        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 8: Strategie A vs B – kumulierter P&L (Hebel 20, oben) + Differenz (unten)
+    pnl_a_lev20 = df["pnl_fixed_lev20"].cumsum()
+    pnl_b_cum_lev20 = df["capital_after_lev20"] - start_capital
+    diff_pnl_ba_lev20 = pnl_b_cum_lev20 - pnl_a_lev20
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+        sharex=True,
+    )
+    ax_top.plot(
+        df["date"],
+        pnl_a_lev20,
+        label="Strategie A (fixer Einsatz) – P&L (Hebel 20)",
+        color="#4c72b0",
+        linewidth=2.0,
+    )
+    ax_top.plot(
+        df["date"],
+        pnl_b_cum_lev20,
+        label="Strategie B (10% Kapital) – P&L (Hebel 20)",
+        color="#c44e52",
+        linewidth=2.0,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – kumulierter P&L (Hebel 20, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("P&L (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=9, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_pnl_ba_lev20,
+        width=2.0,
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L, CHF) für Strategie A und B mit Hebel 20. "
+        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 9: kumulierter P&L als Punkte (A vs B, Hebel 20) + Differenz (unten)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(11.69, 6.2),
+        gridspec_kw={"height_ratios": [3.0, 1.2]},
+        sharex=True,
+    )
+    ax_top.scatter(
+        df["date"],
+        pnl_a_lev20,
+        label="Strategie A (fixer Einsatz) – kumulierter P&L (Hebel 20)",
+        color="#4c72b0",
+        s=18,
+        alpha=0.85,
+    )
+    ax_top.scatter(
+        df["date"],
+        pnl_b_cum_lev20,
+        label="Strategie B (10% Kapital) – kumulierter P&L (Hebel 20)",
+        color="#c44e52",
+        s=18,
+        alpha=0.85,
+    )
+    ax_top.set_title(
+        "Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (Hebel 20, Test-Split)",
+        fontsize=13,
+        weight="bold",
+        pad=10,
+    )
+    ax_top.set_ylabel("P&L (CHF)")
+    ax_top.grid(alpha=0.3)
+    ax_top.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_top.legend(loc="upper left", fontsize=10, framealpha=0.9)
+
+    ax_bot.bar(
+        df["date"],
+        diff_pnl_ba_lev20,
+        width=2.0,
+        color="#8172b2",
+        alpha=0.35,
+    )
+    ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
+    ax_bot.set_xlabel("Datum")
+    ax_bot.grid(alpha=0.2)
+    ax_bot.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax_bot.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax_bot.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax_bot.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.24, hspace=0.08)
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L) als Punkte. Unten Balken: Differenz Δ = (B − A) je Tag.",
+        fontsize=9,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Zusätzliche Analyse: Gewinn pro Trade über Zeit (Hebel 20), als Balken
+    trades = df[df["stake_fixed"] > 0].copy()
+    if not trades.empty:
+        fig, (ax_a, ax_b) = plt.subplots(
+            2,
+            1,
+            figsize=(11.69, 6.6),
+            sharex=True,
+            gridspec_kw={"height_ratios": [1.0, 1.0]},
+        )
+
+        def bar_signed(ax: plt.Axes, x: pd.Series, y: pd.Series, title: str) -> None:
+            colors = np.where(y >= 0, "#1b9e77", "#d95f02")
+            ax.bar(x, y, width=2.0, color=colors, alpha=0.65)
+            ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+            ax.set_title(title, fontsize=11, weight="bold", pad=6)
+            ax.set_ylabel("P&L pro Trade (CHF)")
+            ax.grid(alpha=0.2)
+            ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+
+        # Strategie A: fixer Einsatz, Hebel 20 => pnl_fixed_lev20 ist P&L pro Trade am Tag
+        bar_signed(
+            ax_a,
+            trades["date"],
+            trades["pnl_fixed_lev20"],
+            "Strategie A – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
+        )
+
+        # Strategie B: 10% Kapital, Hebel 20 => pnl_b_lev20 ist P&L pro Trade am Tag
+        bar_signed(
+            ax_b,
+            trades["date"],
+            trades["pnl_b_lev20"],
+            "Strategie B – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
+        )
+        ax_b.set_xlabel("Datum")
+        ax_b.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+        ax_b.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        for tick in ax_b.get_xticklabels():
+            tick.set_rotation(30)
+            tick.set_ha("right")
+
+        fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.24, hspace=0.20)
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Balken zeigen den Gewinn/Verlust pro Trade (nur Tage mit Trade). "
+            "Grün = Gewinn, Orange = Verlust. Hebel 20 ist bereits eingerechnet.",
+            fontsize=9,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # Zusätzliche Analyse: Gewinn pro Monat (Hebel 20), als Balken
+    df_month = df.copy()
+    df_month["month"] = df_month["date"].dt.to_period("M").dt.to_timestamp()
+    monthly = (
+        df_month.groupby("month", as_index=False)[["pnl_fixed_lev20", "pnl_b_lev20"]]
+        .sum()
+        .sort_values("month")
+    )
+    if not monthly.empty:
+        fig, ax = plt.subplots(figsize=(11.69, 4.8))
+        x = np.arange(len(monthly))
+        width = 0.42
+        ax.bar(
+            x - width / 2,
+            monthly["pnl_fixed_lev20"],
+            width=width,
+            color="#4c72b0",
+            alpha=0.75,
+            label="Strategie A (Hebel 20)",
+        )
+        ax.bar(
+            x + width / 2,
+            monthly["pnl_b_lev20"],
+            width=width,
+            color="#c44e52",
+            alpha=0.75,
+            label="Strategie B (Hebel 20)",
+        )
+        ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+        ax.set_title("Gewinn pro Monat (Hebel 20, Test-Split)", fontsize=13, weight="bold")
+        ax.set_xlabel("Monat")
+        ax.set_ylabel("P&L pro Monat (CHF)")
+        ax.grid(alpha=0.2)
+        ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+        ax.set_xticks(x)
+        ax.set_xticklabels([d.strftime("%Y-%m") for d in monthly["month"]], rotation=30, ha="right")
+        ax.legend(loc="upper left", fontsize=10, framealpha=0.9)
+        fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.28)
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Summe der Tages-P&L je Monat. Hebel 20 ist bereits eingerechnet.",
+            fontsize=9,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # Projektion: 5 Jahre Fortsetzung via Bootstrap-Monte-Carlo (keine Prognose!)
+    # Idee: wir resampeln die beobachteten Tages-P&L (inkl. 0-Tage ohne Trades),
+    # damit Trade-Frequenz und Gewinn/Verlust-Verteilung ähnlich bleiben.
+    n_days = 5 * 252  # ca. Handelstage
+    n_paths = 200
+    if len(df) >= 30:
+        rng = np.random.default_rng(42)
+        pnl_a_day_lev20 = df["pnl_fixed_lev20"].to_numpy()
+        pnl_b_day_lev20_arr = df["pnl_b_lev20"].to_numpy()
+
+        paths_a = np.empty((n_paths, n_days), dtype=float)
+        paths_b = np.empty((n_paths, n_days), dtype=float)
+        for i in range(n_paths):
+            sample_idx = rng.integers(0, len(df), size=n_days)
+            paths_a[i] = pnl_a_day_lev20[sample_idx].cumsum()
+            paths_b[i] = pnl_b_day_lev20_arr[sample_idx].cumsum()
+
+        pcts = [10, 50, 90]
+        qa = np.percentile(paths_a, pcts, axis=0)
+        qb = np.percentile(paths_b, pcts, axis=0)
+        t = np.arange(1, n_days + 1)
+
+        fig, ax = plt.subplots(figsize=(11.69, 5.2))
+        ax.fill_between(t, qa[0], qa[2], color="#4c72b0", alpha=0.18, label="A: 10–90% Band")
+        ax.plot(t, qa[1], color="#4c72b0", linewidth=2.0, label="A: Median")
+        ax.fill_between(t, qb[0], qb[2], color="#c44e52", alpha=0.18, label="B: 10–90% Band")
+        ax.plot(t, qb[1], color="#c44e52", linewidth=2.0, label="B: Median")
+
+        ax.set_title("5-Jahres-Projektion (Bootstrap-Monte-Carlo, Hebel 20)", fontsize=13, weight="bold")
+        ax.set_xlabel("Handelstage in der Zukunft (~5 Jahre)")
+        ax.set_ylabel("Kumulierter P&L (CHF)")
+        ax.grid(alpha=0.2)
+        ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+        ax.legend(loc="upper left", fontsize=10, framealpha=0.9, ncol=2)
+        fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.18)
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Keine echte Prognose. Es wird angenommen, dass die Verteilung der Tages-Ergebnisse "
+            "aus dem Testzeitraum (inkl. Tage ohne Trades) in der Zukunft ähnlich bleibt. "
+            "Gezeigt sind Median und 10–90% Band über 200 Simulationen.",
+            fontsize=9,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # Seite 10: kumulierter P&L für Strategie A (fixer Einsatz)
+    fig, ax = plt.subplots(figsize=(11.69, 4.6))
+    ax.plot(df["date"], pnl_a, label="ohne Hebel", color="#4c72b0", linewidth=2.0)
+    ax.plot(df["date"], pnl_a_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--", linewidth=2.0)
+    ax.set_title("Strategie A – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("P&L (CHF)")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper left", fontsize=10)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+    plt.tight_layout()
+    fig.text(
+        0.01,
+        0.03,
+        "Abbildung: kumulierter Gewinn/Verlust (P&L) für Strategie A (fixer Einsatz) "
+        "mit und ohne Hebel 20 auf dem Test-Split.",
+        fontsize=9,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Seite 11: kumulierter P&L für Strategie B (10% Kapital)
+    fig, ax = plt.subplots(figsize=(11.69, 4.6))
+    pnl_b_lev20 = df["capital_after_lev20"] - start_capital
+    ax.plot(df["date"], pnl_b_cum, label="ohne Hebel", color="#4c72b0", linewidth=2.0)
+    ax.plot(df["date"], pnl_b_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--", linewidth=2.0)
+    ax.set_title("Strategie B – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("P&L (CHF)")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper left", fontsize=10)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(30)
+        tick.set_ha("right")
+    plt.tight_layout()
+    fig.text(
+        0.01,
+        0.03,
+        "Abbildung: kumulierter Gewinn/Verlust (P&L) für Strategie B (10% des aktuellen Kapitals pro Trade) "
+        "mit und ohne Hebel 20 auf dem Test-Split.",
+        fontsize=9,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
 
 
 def add_distributions_page(pdf: PdfPages, df: pd.DataFrame) -> None:
@@ -1552,7 +2287,8 @@ def _plot_segment_overlays(
     color: str,
     title: str,
     caption: str,
-    max_segments: int = 25,
+    max_segments: int | None = 25,
+    segments_per_page: int = 25,
     up_threshold: float | None = None,
     down_threshold: float | None = None,
 ) -> None:
@@ -1580,61 +2316,92 @@ def _plot_segment_overlays(
     idx = df.index
 
     start_dates = pd.to_datetime(start_dates)
-    start_dates = [d for d in start_dates if d in idx][:max_segments]
+    start_dates = [d for d in start_dates if d in idx]
+    if max_segments is not None:
+        start_dates = start_dates[:max_segments]
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.set_facecolor("white")
-    ax.plot(df.index, df["Close"], color="lightgray", linewidth=1, label="Close (gesamt)")
+    if not start_dates:
+        fig, ax = plt.subplots(figsize=(10, 3.5))
+        ax.text(0.5, 0.5, f"Keine Segmente für label='{label_name}'.", ha="center", va="center")
+        ax.axis("off")
+        fig.text(0.01, 0.02, caption, fontsize=8)
+        pdf.savefig(fig)
+        plt.close(fig)
+        return
 
-    show_thr_label = True
+    segments_per_page = max(1, int(segments_per_page))
+    total_pages = int(np.ceil(len(start_dates) / segments_per_page))
 
-    for t0 in start_dates:
-        pos = idx.get_loc(t0)
-        end_pos = pos + horizon_steps
-        if end_pos >= len(idx):
-            # wie im Labeler: wenn nicht genug Zukunftsdaten vorhanden sind,
-            # wird dieses Segment übersprungen
-            continue
-        seg = df.iloc[pos : end_pos + 1]
-        start_close = seg["Close"].iloc[0]
+    ymin = float(df["Close"].min())
+    ymax = float(df["Close"].max())
+    pad = 0.02 * (ymax - ymin) if ymax > ymin else 0.001
 
-        ax.plot(seg.index, seg["Close"], color=color, linewidth=2, alpha=0.8)
-        ax.scatter(seg.index[0], seg["Close"].iloc[0], color=color, s=30)
-        ax.scatter(seg.index[-1], seg["Close"].iloc[-1], color=color, s=50, marker="x")
+    for page_start in range(0, len(start_dates), segments_per_page):
+        page_dates = start_dates[page_start : page_start + segments_per_page]
+        page_no = page_start // segments_per_page + 1
 
-        # Threshold-Markierung (optional)
-        if label_name == "up" and up_threshold is not None:
-            thr = start_close * (1.0 + up_threshold)
-            ax.scatter(
-                seg.index[-1],
-                thr,
-                color="blue",
-                marker="^",
-                s=40,
-                label="up-threshold" if show_thr_label else None,
-            )
-            show_thr_label = False
-        elif label_name == "down" and down_threshold is not None:
-            thr = start_close * (1.0 + down_threshold)
-            ax.scatter(
-                seg.index[-1],
-                thr,
-                color="blue",
-                marker="v",
-                s=40,
-                label="down-threshold" if show_thr_label else None,
-            )
-            show_thr_label = False
+        fig, ax = plt.subplots(figsize=(11.69, 5.2))
+        ax.set_facecolor("white")
+        ax.plot(df.index, df["Close"], color="lightgray", linewidth=1.0, label="Close (Test)")
+        ax.set_ylim(ymin - pad, ymax + pad)
+        _format_date_axis_monthly(ax)
 
-    ax.set_title(title)
-    ax.set_xlabel("Datum")
-    ax.set_ylabel("Close")
-    if not show_thr_label:
-        ax.legend(loc="best", fontsize=8)
-    plt.tight_layout()
-    fig.text(0.01, 0.02, caption, fontsize=8)
-    pdf.savefig(fig)
-    plt.close(fig)
+        show_thr_label = True
+
+        for t0 in page_dates:
+            pos = idx.get_loc(t0)
+            end_pos = pos + horizon_steps
+            if end_pos >= len(idx):
+                continue
+            seg = df.iloc[pos : end_pos + 1]
+            start_close = seg["Close"].iloc[0]
+
+            ax.plot(seg.index, seg["Close"], color=color, linewidth=1.6, alpha=0.65)
+            ax.scatter(seg.index[0], seg["Close"].iloc[0], color=color, s=18, alpha=0.9)
+            ax.scatter(seg.index[-1], seg["Close"].iloc[-1], color=color, s=26, marker="x", alpha=0.9)
+
+            # Threshold-Markierung (optional)
+            if label_name == "up" and up_threshold is not None:
+                thr = start_close * (1.0 + up_threshold)
+                ax.scatter(
+                    seg.index[-1],
+                    thr,
+                    color="blue",
+                    marker="^",
+                    s=28,
+                    alpha=0.9,
+                    label="up-threshold" if show_thr_label else None,
+                )
+                show_thr_label = False
+            elif label_name == "down" and down_threshold is not None:
+                thr = start_close * (1.0 + down_threshold)
+                ax.scatter(
+                    seg.index[-1],
+                    thr,
+                    color="blue",
+                    marker="v",
+                    s=28,
+                    alpha=0.9,
+                    label="down-threshold" if show_thr_label else None,
+                )
+                show_thr_label = False
+
+        page_title = title
+        if total_pages > 1:
+            page_title += f" – Seite {page_no}/{total_pages}"
+        ax.set_title(page_title)
+        ax.set_xlabel("Datum")
+        ax.set_ylabel("Close")
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            uniq = dict(zip(labels, handles))
+            ax.legend(uniq.values(), uniq.keys(), loc="upper left", fontsize=9, ncol=2)
+
+        plt.tight_layout()
+        fig.text(0.01, 0.02, caption, fontsize=8)
+        pdf.savefig(fig)
+        plt.close(fig)
 
 
 def _plot_segment_rel_small_multiples(
@@ -1644,7 +2411,9 @@ def _plot_segment_rel_small_multiples(
     horizon_steps: int,
     label_name: str,
     caption: str,
-    max_segments: int = 16,
+    max_segments: int | None = 16,
+    up_threshold: float | None = None,
+    down_threshold: float | None = None,
     labels_for_dates: Dict[pd.Timestamp, str] | None = None,
 ) -> None:
     """Small-Multiples: rel. Verlauf 0..horizon_steps für gegebene Starttage.
@@ -1661,7 +2430,9 @@ def _plot_segment_rel_small_multiples(
     idx = df.index
 
     start_dates = pd.to_datetime(start_dates)
-    start_dates = [d for d in start_dates if d in idx][:max_segments]
+    start_dates = [d for d in start_dates if d in idx]
+    if max_segments is not None:
+        start_dates = start_dates[:max_segments]
 
     segments: list[tuple[str, range, np.ndarray]] = []
     for t0 in start_dates:
@@ -1687,12 +2458,23 @@ def _plot_segment_rel_small_multiples(
         plt.close(fig)
         return
 
-    if max_segments is not None:
-        segments = segments[:max_segments]
+    # y-Achse: dynamisch zoomen, damit kleine Änderungen besser sichtbar sind.
+    all_vals = np.concatenate([vals for _, _, vals in segments]) if segments else np.array([0.0])
+    max_abs = float(np.nanmax(np.abs(all_vals))) if all_vals.size else 0.0
+    thr_abs = 0.0
+    if up_threshold is not None:
+        thr_abs = max(thr_abs, abs(float(up_threshold)))
+    if down_threshold is not None:
+        thr_abs = max(thr_abs, abs(float(down_threshold)))
+
+    # Mindestens ±1% und so wählen, dass Threshold-Linien immer im Plot liegen.
+    y_lim = max(max_abs * 1.25, thr_abs * 1.1, 0.01)
+    if y_lim <= 0:
+        y_lim = 0.01
+    yticks = list(np.linspace(-y_lim, y_lim, 5))
 
     segments_per_page = 6
     nrows, ncols = 3, 2
-    yticks = [-0.05, -0.025, 0.0, 0.025, 0.05]
 
     for page_start in range(0, len(segments), segments_per_page):
         page_segments = segments[page_start : page_start + segments_per_page]
@@ -1707,14 +2489,38 @@ def _plot_segment_rel_small_multiples(
         axes_flat = axes.flatten()
 
         # Standardformatierung für alle Achsen
+        show_thr_up_label = True
+        show_thr_down_label = True
         for ax in axes_flat:
-            ax.set_ylim(yticks[0], yticks[-1])
+            ax.set_ylim(-y_lim, y_lim)
             ax.set_yticks(yticks)
+            ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=1))
             ax.grid(True, alpha=0.3)
             # X-Ticks immer 0..horizon_steps, damit die Skala einheitlich ist
             xticks = list(range(horizon_steps + 1))
             ax.set_xticks(xticks)
             ax.set_xticklabels([str(t) for t in xticks])
+            ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+            if up_threshold is not None:
+                ax.axhline(
+                    float(up_threshold),
+                    color="#1f78b4",
+                    linestyle="--",
+                    linewidth=1.0,
+                    alpha=0.75,
+                    label="up-threshold" if show_thr_up_label else None,
+                )
+                show_thr_up_label = False
+            if down_threshold is not None:
+                ax.axhline(
+                    float(down_threshold),
+                    color="#1f78b4",
+                    linestyle=":",
+                    linewidth=1.0,
+                    alpha=0.75,
+                    label="down-threshold" if show_thr_down_label else None,
+                )
+                show_thr_down_label = False
 
         # Segmente plotten
         for ax, (label, steps, rel_values) in zip(axes_flat, page_segments):
@@ -1735,7 +2541,7 @@ def _plot_segment_rel_small_multiples(
             ax.set_xlabel("Schritt (Handelstage)")
             # Y-Achsen-Beschriftung nur in der ersten Spalte, um Überfüllung zu vermeiden
             if col == 0:
-                ax.set_ylabel("rel_close")
+                ax.set_ylabel("rel_close (%)")
             else:
                 ax.set_ylabel("")
 
@@ -1744,8 +2550,20 @@ def _plot_segment_rel_small_multiples(
             page_no = page_start // segments_per_page + 1
             title += f" – Seite {page_no}"
         fig.suptitle(title, y=0.97)
+        handles, labels = axes_flat[0].get_legend_handles_labels()
+        if handles:
+            uniq = dict(zip(labels, handles))
+            fig.legend(
+                uniq.values(),
+                uniq.keys(),
+                loc="lower center",
+                ncol=min(3, len(uniq)),
+                fontsize=8,
+                frameon=False,
+                bbox_to_anchor=(0.5, 0.10),
+            )
         # mehr Platz nach unten für X-Tick-Labels lassen
-        fig.tight_layout(rect=(0.06, 0.20, 0.98, 0.90))
+        fig.tight_layout(rect=(0.06, 0.22, 0.98, 0.90))
 
         fig.text(0.01, 0.035, caption, fontsize=8)
         pdf.savefig(fig)
@@ -1781,6 +2599,8 @@ def add_label_segment_pages(
         color="green",
         title="EURUSD-Segmente mit label='up' (Test-Split)",
         caption="Abbildung: Preis-Segmente t..t+horizon für alle Testtage mit true label 'up'.",
+        max_segments=None,
+        segments_per_page=25,
         up_threshold=up_thr,
         down_threshold=down_thr,
     )
@@ -1791,6 +2611,9 @@ def add_label_segment_pages(
         horizon_steps=horizon,
         label_name="up",
         caption="Abbildung: Relativer Verlauf der Close-Preise für alle Testtage mit true label 'up'.",
+        max_segments=None,
+        up_threshold=up_thr,
+        down_threshold=down_thr,
     )
 
     _plot_segment_overlays(
@@ -1802,6 +2625,8 @@ def add_label_segment_pages(
         color="red",
         title="EURUSD-Segmente mit label='down' (Test-Split)",
         caption="Abbildung: Preis-Segmente t..t+horizon für alle Testtage mit true label 'down'.",
+        max_segments=None,
+        segments_per_page=25,
         up_threshold=up_thr,
         down_threshold=down_thr,
     )
@@ -1812,6 +2637,9 @@ def add_label_segment_pages(
         horizon_steps=horizon,
         label_name="down",
         caption="Abbildung: Relativer Verlauf der Close-Preise für alle Testtage mit true label 'down'.",
+        max_segments=None,
+        up_threshold=up_thr,
+        down_threshold=down_thr,
     )
 
 
@@ -1831,6 +2659,8 @@ def add_misclassified_neutral_segment_pages(
     cfg = results.get("config", {})
     test_start = pd.to_datetime(cfg.get("test_start"))
     horizon = int(cfg.get("horizon_days", 4))
+    up_thr = cfg.get("up_threshold")
+    down_thr = cfg.get("down_threshold")
 
     df_test = df_price[df_price["date"] >= test_start].copy()
 
@@ -1878,6 +2708,8 @@ def add_misclassified_neutral_segment_pages(
                 "Abbildung: Relativer Verlauf der Close-Preise für alle Testtage "
                 "mit true label 'neutral', die im kombinierten Test als 'up' klassifiziert wurden."
             ),
+            up_threshold=up_thr,
+            down_threshold=down_thr,
             labels_for_dates=labels_for_dates_up,
         )
 
@@ -1918,6 +2750,8 @@ def add_misclassified_neutral_segment_pages(
                 "Abbildung: Relativer Verlauf der Close-Preise für alle Testtage "
                 "mit true label 'neutral', die im kombinierten Test als 'down' klassifiziert wurden."
             ),
+            up_threshold=up_thr,
+            down_threshold=down_thr,
             labels_for_dates=labels_for_dates_down,
         )
 
@@ -2027,6 +2861,7 @@ def main() -> None:
         preds = load_predictions(project_root, exp_id)
         if preds is not None:
             add_misclassification_summary_page(pdf, preds)
+            add_misclassification_timeline_pages(pdf, df, preds, project_root, exp_config, results)
             add_misclassified_neutral_segment_pages(pdf, df, preds, project_root, exp_config, results)
 
             fx_labels = load_fx_labels_for_exp(project_root, exp_id)
