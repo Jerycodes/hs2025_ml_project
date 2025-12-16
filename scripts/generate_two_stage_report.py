@@ -250,11 +250,21 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     write(f"- strict_monotonic: {label_params.get('strict_monotonic')}")
     if "max_adverse_move_pct" in label_params:
         write(f"- max_adverse_move_pct: {label_params.get('max_adverse_move_pct')}")
+    if "price_source" in label_params:
+        write(f"- price_source: {label_params.get('price_source')}")
+    if "drop_weekends" in label_params:
+        write(f"- drop_weekends: {label_params.get('drop_weekends')}")
     if "hit_within_horizon" in label_params:
         write(
             "- hit_within_horizon: "
             f"{label_params.get('hit_within_horizon')} "
             "(True = Schwelle reicht, wenn sie irgendwo im Horizont erreicht wird)"
+        )
+    if "first_hit_wins" in label_params:
+        write(
+            "- first_hit_wins: "
+            f"{label_params.get('first_hit_wins')} "
+            "(nur relevant bei hit_within_horizon=True: entscheidet nach erstem Treffer)"
         )
     y -= line_height
 
@@ -1166,11 +1176,113 @@ def _compute_trade_return(
     return 0.0
 
 
-def add_trade_simulation_pages(
+def _compute_trade_return_tp_or_horizon_no_sl(
+    date: pd.Timestamp,
+    pred_label: str,
+    true_label: str,
+    fx_df: pd.DataFrame,
+    label_params: Dict[str, Any],
+) -> float:
+    """Variante Tradesimulation: Take-Profit oder Horizontende, kein Stop-Loss.
+
+    Regel:
+    - pred_label='neutral' -> kein Trade -> 0.0
+    - pred_label in {'up','down'}:
+        - Wenn die jeweilige Schwelle innerhalb des Horizonts erreicht wird:
+            -> Trade wird sofort mit exakt der Schwellen-Rendite geschlossen.
+        - Sonst:
+            -> Trade wird am Ende des Horizonts geschlossen (Return am Horizontende).
+
+    Hinweis:
+    - ``true_label`` wird hier NICHT für worst-case Heuristiken verwendet.
+      Diese Variante ist bewusst einfacher/optimistischer als die SL+TP-Variante.
+    """
+    pred_label = str(pred_label)
+    if pred_label == "neutral":
+        return 0.0
+
+    horizon = int(label_params.get("horizon_days", 4))
+    up_thr = float(label_params.get("up_threshold", 0.0))
+    down_thr = float(label_params.get("down_threshold", 0.0))
+
+    try:
+        idx = fx_df.index.get_loc(date)
+    except KeyError:
+        return 0.0
+
+    if idx + horizon >= len(fx_df):
+        return 0.0
+
+    segment = fx_df["Close"].iloc[idx : idx + horizon + 1].to_numpy()
+    entry = float(segment[0])
+
+    if pred_label == "up":
+        tp_level = entry * (1 + up_thr)
+        for price in segment[1:]:
+            if float(price) >= tp_level:
+                return float(up_thr)
+        return float((segment[-1] - entry) / entry)
+
+    if pred_label == "down":
+        tp_level = entry * (1 + down_thr)
+        for price in segment[1:]:
+            if float(price) <= tp_level:
+                return float(-down_thr)
+        return float((entry - segment[-1]) / entry)
+
+    return 0.0
+
+
+def _add_trade_simulation_rule_page(
+    pdf: PdfPages,
+    label_params: Dict[str, Any],
+    *,
+    title: str,
+    bullets: list[str],
+) -> None:
+    fig = plt.figure(figsize=(11.69, 8.27))
+    fig.patch.set_facecolor("white")
+    ax = fig.add_subplot(111)
+    ax.axis("off")
+
+    y = 0.92
+    fig.text(0.06, y, "Tradesimulation – Regel", fontsize=18, weight="bold")
+    y -= 0.06
+    fig.text(0.06, y, title, fontsize=13, weight="bold")
+    y -= 0.05
+
+    lp = label_params or {}
+    fig.text(
+        0.06,
+        y,
+        f"Parameter: horizon_days={lp.get('horizon_days')}, up_threshold={lp.get('up_threshold')}, "
+        f"down_threshold={lp.get('down_threshold')}, max_adverse_move_pct={lp.get('max_adverse_move_pct')}",
+        fontsize=11,
+    )
+    y -= 0.06
+
+    for line in bullets:
+        fig.text(0.06, y, f"- {line}", fontsize=11)
+        y -= 0.035
+
+    fig.text(
+        0.06,
+        0.08,
+        "Hinweis: Diese Simulation arbeitet (wie bisher) close-basiert. Intraday-Trigger (High/Low) sind hier nicht abgebildet.",
+        fontsize=10,
+        alpha=0.85,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _add_trade_simulation_pages_variant(
     pdf: PdfPages,
     preds: pd.DataFrame,
     fx_df: pd.DataFrame,
     exp_config: Dict[str, Any],
+    *,
+    trade_return_fn,
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein."""
     label_params = exp_config.get("label_params", {})
@@ -1179,7 +1291,7 @@ def add_trade_simulation_pages(
 
     # Trade-Return (in %) pro Tag
     df["trade_return"] = [
-        _compute_trade_return(dt, pred, true, fx_df, label_params)
+        trade_return_fn(dt, pred, true, fx_df, label_params)
         for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
     ]
 
@@ -1963,6 +2075,56 @@ def add_trade_simulation_pages(
 
 
 
+def add_trade_simulation_pages(
+    pdf: PdfPages,
+    preds: pd.DataFrame,
+    fx_df: pd.DataFrame,
+    exp_config: Dict[str, Any],
+) -> None:
+    """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein.
+
+    Neu: Wir erzeugen die Tradesimulation bewusst in zwei Varianten, damit man
+    sieht, wie sensitiv die Resultate auf die Closing-Regel reagieren.
+    """
+    label_params = exp_config.get("label_params", {})
+
+    _add_trade_simulation_rule_page(
+        pdf,
+        label_params,
+        title="Variante 1: SL + TP (wie bisher)",
+        bullets=[
+            "Stop-Loss und Take-Profit werden innerhalb des Fensters geprüft (close-basiert).",
+            "Wenn weder SL noch TP getroffen wird: Exit am Horizontende (t+horizon_days).",
+            "Sonderfall: true_label='neutral' aber Trade -> konservativ Stop-Loss-Annahme (wie bisher).",
+        ],
+    )
+    _add_trade_simulation_pages_variant(
+        pdf,
+        preds,
+        fx_df,
+        exp_config,
+        trade_return_fn=_compute_trade_return,
+    )
+
+    _add_trade_simulation_rule_page(
+        pdf,
+        label_params,
+        title="Variante 2: TP-only (kein Stop-Loss, sonst Horizontende)",
+        bullets=[
+            "Wenn die Label-Schwelle (TP) innerhalb des Fensters erreicht wird: Exit sofort mit TP-Return.",
+            "Kein Stop-Loss: wenn TP nicht erreicht wird, wird am Horizontende geschlossen (Return am Horizontende).",
+            "Diese Variante ist bewusst vereinfacht/optimistischer und dient als Vergleich.",
+        ],
+    )
+    _add_trade_simulation_pages_variant(
+        pdf,
+        preds,
+        fx_df,
+        exp_config,
+        trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
+    )
+
+
 def add_distributions_page(pdf: PdfPages, df: pd.DataFrame) -> None:
     """Fügt eine Seite mit den Verteilungen von label, signal und direction hinzu."""
     fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
@@ -2414,6 +2576,7 @@ def _plot_segment_rel_small_multiples(
     max_segments: int | None = 16,
     up_threshold: float | None = None,
     down_threshold: float | None = None,
+    max_adverse_move_pct: float | None = None,
     labels_for_dates: Dict[pd.Timestamp, str] | None = None,
 ) -> None:
     """Small-Multiples: rel. Verlauf 0..horizon_steps für gegebene Starttage.
@@ -2466,6 +2629,8 @@ def _plot_segment_rel_small_multiples(
         thr_abs = max(thr_abs, abs(float(up_threshold)))
     if down_threshold is not None:
         thr_abs = max(thr_abs, abs(float(down_threshold)))
+    if max_adverse_move_pct is not None:
+        thr_abs = max(thr_abs, abs(float(max_adverse_move_pct)))
 
     # Mindestens ±1% und so wählen, dass Threshold-Linien immer im Plot liegen.
     y_lim = max(max_abs * 1.25, thr_abs * 1.1, 0.01)
@@ -2491,6 +2656,7 @@ def _plot_segment_rel_small_multiples(
         # Standardformatierung für alle Achsen
         show_thr_up_label = True
         show_thr_down_label = True
+        show_adv_label = True
         for ax in axes_flat:
             ax.set_ylim(-y_lim, y_lim)
             ax.set_yticks(yticks)
@@ -2521,6 +2687,39 @@ def _plot_segment_rel_small_multiples(
                     label="down-threshold" if show_thr_down_label else None,
                 )
                 show_thr_down_label = False
+
+            # Optional: Adverse-Move-Grenze sichtbar machen (hilft beim Verständnis,
+            # warum ein Tag trotz großer Endbewegung als neutral gelabelt sein kann).
+            if max_adverse_move_pct is not None and float(max_adverse_move_pct) > 0:
+                adv = float(max_adverse_move_pct)
+                name = str(label_name).lower()
+                plot_up_adv = ("up" in name) and ("down" not in name)
+                plot_down_adv = ("down" in name) and ("up" not in name)
+                # fallback: wenn unklar, beide zeigen
+                if not plot_up_adv and not plot_down_adv:
+                    plot_up_adv = True
+                    plot_down_adv = True
+
+                if plot_up_adv:
+                    ax.axhline(
+                        -adv,
+                        color="#e31a1c",
+                        linestyle="-.",
+                        linewidth=1.0,
+                        alpha=0.7,
+                        label="adverse-limit (up)" if show_adv_label else None,
+                    )
+                    show_adv_label = False
+                if plot_down_adv:
+                    ax.axhline(
+                        adv,
+                        color="#e31a1c",
+                        linestyle="-.",
+                        linewidth=1.0,
+                        alpha=0.7,
+                        label="adverse-limit (down)" if show_adv_label else None,
+                    )
+                    show_adv_label = False
 
         # Segmente plotten
         for ax, (label, steps, rel_values) in zip(axes_flat, page_segments):
@@ -2614,6 +2813,7 @@ def add_label_segment_pages(
         max_segments=None,
         up_threshold=up_thr,
         down_threshold=down_thr,
+        max_adverse_move_pct=cfg.get("max_adverse_move_pct"),
     )
 
     _plot_segment_overlays(
@@ -2640,6 +2840,7 @@ def add_label_segment_pages(
         max_segments=None,
         up_threshold=up_thr,
         down_threshold=down_thr,
+        max_adverse_move_pct=cfg.get("max_adverse_move_pct"),
     )
 
 
@@ -2710,6 +2911,7 @@ def add_misclassified_neutral_segment_pages(
             ),
             up_threshold=up_thr,
             down_threshold=down_thr,
+            max_adverse_move_pct=cfg.get("max_adverse_move_pct"),
             labels_for_dates=labels_for_dates_up,
         )
 
@@ -2752,6 +2954,7 @@ def add_misclassified_neutral_segment_pages(
             ),
             up_threshold=up_thr,
             down_threshold=down_thr,
+            max_adverse_move_pct=cfg.get("max_adverse_move_pct"),
             labels_for_dates=labels_for_dates_down,
         )
 

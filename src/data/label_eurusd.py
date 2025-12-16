@@ -36,7 +36,9 @@ def label_eurusd(
     strict_monotonic: bool = True,
     max_adverse_move_pct: float | None = None,
     hit_within_horizon: bool = False,
+    first_hit_wins: bool = False,
     price_source: str = "yahoo",
+    drop_weekends: bool = False,
 ) -> pd.DataFrame:
     """Erstellt ein DataFrame mit Lookahead-Rendite + Label fuer jede Tageskerze.
 
@@ -76,6 +78,21 @@ def label_eurusd(
             Fensters [t, t+horizon_days] die Schwelle einmal erreicht oder
             ueberschritten (up) bzw. unterschritten (down) wird. Damit wird
             eher die Logik eines Take-Profit-Treffers abgebildet.
+    - first_hit_wins:
+        Nur relevant, wenn ``hit_within_horizon=True``.
+
+        Problem: Im selben Horizont-Fenster kann sowohl die Up- als auch die
+        Down-Schwelle erreicht werden (z.B. erst +0.4%, danach -0.4%).
+
+        - False (Standard / Backwards-Kompatibilität):
+            Es wird nur geprüft *ob* innerhalb des Fensters getroffen wurde
+            (max/min über das Segment). Wenn beide Treffer möglich sind,
+            kann es zu Overlap kommen (aktuell gewinnt „down“, da es zuletzt gesetzt wird).
+        - True (empfohlen für trading-nahe Logik):
+            Es wird geprüft, welche Schwelle *zuerst* erreicht wird. Das Label
+            entspricht dem ersten Treffer. Pfad-Filter (Monotonie / Adverse Move)
+            werden in diesem Fall nur bis zum Treffer-Tag geprüft (danach wäre man
+            im Trading-Sinn bereits aus dem Trade raus).
     - price_source:
         Datenquelle fuer die FX-Preise.
 
@@ -83,6 +100,10 @@ def label_eurusd(
         - \"eodhd\":            liest data/raw/fx/EURUSDX_eodhd.csv
 
         Weitere Quellen koennen spaeter ergaenzt werden.
+    - drop_weekends:
+        Wenn True, werden Samstage/Sonntage aus der Preiszeitreihe entfernt.
+        Das ist sinnvoll, wenn eine Datenquelle (z.B. EODHD) Wochenend-Zeilen enthält,
+        da unser Modell „Handelstage“ (typisch Mo–Fr) annimmt.
     """
 
     # Rohdaten laden und chronologisch sortieren
@@ -107,6 +128,9 @@ def label_eurusd(
     df["Date"] = parsed_dates
     df = df.sort_values("Date").set_index("Date")
 
+    if drop_weekends:
+        df = df[df.index.dayofweek < 5]
+
     # Spalten in numerische Typen umwandeln, damit Rechnungen funktionieren
     for col in ["Close", "High", "Low", "Open", "Volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -129,6 +153,8 @@ def label_eurusd(
     mono_down = np.full(n, False)
     hit_up = np.full(n, False)
     hit_down = np.full(n, False)
+    first_up = np.full(n, False)
+    first_down = np.full(n, False)
 
     for i in range(n):
         end = i + horizon_days
@@ -168,6 +194,65 @@ def label_eurusd(
         hit_up[i] = max_seg >= start * (1 + up_threshold)
         hit_down[i] = min_seg <= start * (1 + down_threshold)
 
+        # Optional: Konfliktauflösung über "first hit" (welche Schwelle zuerst erreicht wird).
+        if hit_within_horizon and first_hit_wins:
+            up_level = start * (1 + up_threshold)
+            down_level = start * (1 + down_threshold)
+
+            up_idx: int | None = None
+            down_idx: int | None = None
+
+            for j, price in enumerate(segment[1:], start=1):
+                if up_idx is None and price >= up_level:
+                    up_idx = j
+                if down_idx is None and price <= down_level:
+                    down_idx = j
+                if up_idx is not None and down_idx is not None:
+                    break
+
+            if up_idx is None and down_idx is None:
+                continue
+
+            if down_idx is None:
+                winner = "up"
+                hit_idx = up_idx
+            elif up_idx is None:
+                winner = "down"
+                hit_idx = down_idx
+            else:
+                # Bei Gleichstand (praktisch nur bei sehr groben Daten möglich)
+                # behalten wir den bisherigen Bias: down gewinnt.
+                if up_idx < down_idx:
+                    winner = "up"
+                    hit_idx = up_idx
+                else:
+                    winner = "down"
+                    hit_idx = down_idx
+
+            # Pfad-Checks nur bis zum Treffer-Tag (inklusive).
+            subseg = segment[: hit_idx + 1]
+            if strict_monotonic:
+                diffs = np.diff(subseg)
+                ok_monotonic = bool(np.all(diffs > 0)) if winner == "up" else bool(np.all(diffs < 0))
+            else:
+                ok_monotonic = True
+
+            if max_adverse_move_pct is not None:
+                min_sub = subseg.min()
+                max_sub = subseg.max()
+                if winner == "up":
+                    ok_adverse = bool(min_sub >= start * (1 - max_adverse_move_pct))
+                else:
+                    ok_adverse = bool(max_sub <= start * (1 + max_adverse_move_pct))
+            else:
+                ok_adverse = True
+
+            ok_path = ok_monotonic and ok_adverse
+            if winner == "up":
+                first_up[i] = ok_path
+            else:
+                first_down[i] = ok_path
+
     # Schwellenwerte anwenden, um Labels zu vergeben:
     # Startwert fuer alle Tage ist neutral.
     labels = pd.Series("neutral", index=df.index)
@@ -175,13 +260,18 @@ def label_eurusd(
     mono_down_series = pd.Series(mono_down, index=df.index)
 
     if hit_within_horizon:
-        # Alternative Logik: Schwelle muss irgendwann innerhalb des
-        # Pfades [t, t+horizon_days] getroffen werden.
-        hit_up_series = pd.Series(hit_up, index=df.index)
-        hit_down_series = pd.Series(hit_down, index=df.index)
+        if first_hit_wins:
+            # Alternative Logik: Entscheide nach erstem Treffer (first hit).
+            up_mask = pd.Series(first_up, index=df.index)
+            down_mask = pd.Series(first_down, index=df.index)
+        else:
+            # Alternative Logik: Schwelle muss irgendwann innerhalb des
+            # Pfades [t, t+horizon_days] getroffen werden.
+            hit_up_series = pd.Series(hit_up, index=df.index)
+            hit_down_series = pd.Series(hit_down, index=df.index)
 
-        up_mask = hit_up_series & mono_up_series
-        down_mask = hit_down_series & mono_down_series
+            up_mask = hit_up_series & mono_up_series
+            down_mask = hit_down_series & mono_down_series
     else:
         # Standard: Endrendite am Horizonttag entscheidet.
         up_mask = (returns >= up_threshold) & mono_up_series

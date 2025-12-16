@@ -127,6 +127,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Vergleicht Profit-Verläufe zweier Final-Two-Stage Experimente.")
     parser.add_argument("--exp-a", type=str, required=True, help="z.B. hp_long_final_yahoo (price_only)")
     parser.add_argument("--exp-b", type=str, required=True, help="z.B. hv_long_final_yahoo (news+price)")
+    parser.add_argument(
+        "--label-a",
+        type=str,
+        default=None,
+        help="Optionales Label für Experiment A (z.B. 'ohne News' / 'baseline').",
+    )
+    parser.add_argument(
+        "--label-b",
+        type=str,
+        default=None,
+        help="Optionales Label für Experiment B (z.B. 'mit News' / 'first-hit').",
+    )
     parser.add_argument("--strategy", choices=["A", "B"], default="B", help="A=fixed stake, B=10%% Kapital")
     parser.add_argument("--leverage", type=float, default=20.0, help="Hebel (z.B. 1 oder 20)")
     parser.add_argument("--stake-fixed", type=float, default=100.0, help="Einsatz pro Trade (Strategie A)")
@@ -177,9 +189,15 @@ def main() -> None:
     )
 
     label_strat = "Strategie A (fixer Einsatz)" if strategy == "A" else "Strategie B (10% Kapital)"
+    default_label_a = "ohne News" if str(exp_a).startswith("hp") and str(exp_b).startswith("hv") else None
+    default_label_b = "mit News" if str(exp_a).startswith("hp") and str(exp_b).startswith("hv") else None
+    label_a = args.label_a or default_label_a
+    label_b = args.label_b or default_label_b
+    suffix_a = f" ({label_a})" if label_a else ""
+    suffix_b = f" ({label_b})" if label_b else ""
     title = (
         f"Vergleich: {label_strat} – kumulierter P&L als Punkte (Hebel {args.leverage:g}, Test)\n"
-        f"{exp_a} (ohne News) vs {exp_b} (mit News)"
+        f"{exp_a}{suffix_a} vs {exp_b}{suffix_b}"
     )
 
     ax_top.scatter(
@@ -188,7 +206,7 @@ def main() -> None:
         s=18,
         alpha=0.85,
         color="#4c72b0",
-        label=f"{exp_a} (ohne News)",
+        label=f"{exp_a}{suffix_a}",
     )
     ax_top.scatter(
         merged["date"],
@@ -196,7 +214,7 @@ def main() -> None:
         s=18,
         alpha=0.85,
         color="#c44e52",
-        label=f"{exp_b} (mit News)",
+        label=f"{exp_b}{suffix_b}",
     )
     ax_top.set_title(title, fontsize=12, weight="bold", pad=10)
     ax_top.set_ylabel("P&L (CHF)")
@@ -222,7 +240,7 @@ def main() -> None:
     fig.text(
         0.01,
         0.02,
-        "Abbildung: Oben kumulierter Gewinn/Verlust als Punkte. Unten Balken: Differenz Δ = (mit News − ohne News) je Datum.",
+        "Abbildung: Oben kumulierter Gewinn/Verlust als Punkte. Unten Balken: Differenz Δ = (B − A) je Datum.",
         fontsize=9,
     )
 
@@ -243,4 +261,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
