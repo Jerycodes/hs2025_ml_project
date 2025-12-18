@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import json
 import numpy as np
 import pandas as pd
 
@@ -309,9 +310,143 @@ def main() -> None:
             "angehängt wird, z. B. 'v1_h4_thr0p5pct_strict'."
         ),
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Optionaler Pfad zu einer JSON-Konfiguration. Erwartet entweder "
+            "direkt ein dict mit Label-Parametern oder einen Block "
+            "{'label_params': {...}} (wie in data/processed/experiments/<EXP_ID>_config.json)."
+        ),
+    )
+    parser.add_argument(
+        "--horizon-days",
+        type=int,
+        default=None,
+        help="Anzahl Tage in die Zukunft (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--up-threshold",
+        type=float,
+        default=None,
+        help="Up-Schwelle als Rendite, z.B. 0.02 für +2 Prozent (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--down-threshold",
+        type=float,
+        default=None,
+        help="Down-Schwelle als Rendite, z.B. -0.02 für -2 Prozent (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--strict-monotonic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wenn gesetzt, erzwingt/nicht erzwingt strenge Monotonie (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--max-adverse-move-pct",
+        type=float,
+        default=None,
+        help="Optionaler Adverse-Move-Filter, z.B. 0.004 für 0.4 Prozent (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--no-max-adverse-move",
+        action="store_true",
+        help="Deaktiviert den Adverse-Move-Filter (setzt max_adverse_move_pct=None), auch wenn in Config gesetzt.",
+    )
+    parser.add_argument(
+        "--hit-within-horizon",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wenn True, reicht Treffer irgendwo im Horizont (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--first-hit-wins",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Nur bei hit_within_horizon: erster Treffer entscheidet (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--price-source",
+        choices=["yahoo", "eodhd"],
+        default=None,
+        help="Datenquelle für FX-Preise (überschreibt Config/Default).",
+    )
+    parser.add_argument(
+        "--drop-weekends",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wenn True, filtert Wochenenden aus der Zeitreihe (überschreibt Config/Default).",
+    )
     args = parser.parse_args()
 
-    labeled = label_eurusd()
+    def load_label_params_from_json(path: Path) -> dict:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "label_params" in data and isinstance(data["label_params"], dict):
+            return data["label_params"]
+        if isinstance(data, dict):
+            return data
+        raise ValueError(f"Unerwartetes JSON-Format in {path}. Erwartet dict oder {{'label_params': dict}}.")
+
+    label_params: dict = {}
+    loaded_from: Path | None = None
+
+    if args.config is not None:
+        loaded_from = args.config
+        label_params.update(load_label_params_from_json(args.config))
+    elif args.exp_id:
+        safe_suffix = args.exp_id.replace(" ", "_")
+        cfg_path = DATA_PROCESSED / "experiments" / f"{safe_suffix}_config.json"
+        if cfg_path.is_file():
+            loaded_from = cfg_path
+            label_params.update(load_label_params_from_json(cfg_path))
+
+    allowed_keys = {
+        "horizon_days",
+        "up_threshold",
+        "down_threshold",
+        "strict_monotonic",
+        "max_adverse_move_pct",
+        "hit_within_horizon",
+        "first_hit_wins",
+        "price_source",
+        "drop_weekends",
+    }
+    label_params = {k: v for k, v in label_params.items() if k in allowed_keys}
+
+    # CLI-Overrides (nur wenn explizit gesetzt)
+    if args.horizon_days is not None:
+        label_params["horizon_days"] = args.horizon_days
+    if args.up_threshold is not None:
+        label_params["up_threshold"] = args.up_threshold
+    if args.down_threshold is not None:
+        label_params["down_threshold"] = args.down_threshold
+    if args.strict_monotonic is not None:
+        label_params["strict_monotonic"] = args.strict_monotonic
+    if args.no_max_adverse_move:
+        label_params["max_adverse_move_pct"] = None
+    elif args.max_adverse_move_pct is not None:
+        label_params["max_adverse_move_pct"] = args.max_adverse_move_pct
+    if args.hit_within_horizon is not None:
+        label_params["hit_within_horizon"] = args.hit_within_horizon
+    if args.first_hit_wins is not None:
+        label_params["first_hit_wins"] = args.first_hit_wins
+    if args.price_source is not None:
+        label_params["price_source"] = args.price_source
+    if args.drop_weekends is not None:
+        label_params["drop_weekends"] = args.drop_weekends
+
+    if "horizon_days" in label_params and int(label_params["horizon_days"]) <= 0:
+        raise ValueError("horizon_days muss > 0 sein.")
+
+    if loaded_from is not None:
+        print(f"[info] Label-Parameter aus Config geladen: {loaded_from}")
+    if label_params:
+        print(f"[info] Verwendete Label-Parameter (Overrides berücksichtigt): {label_params}")
+
+    labeled = label_eurusd(**label_params)
 
     out_dir = DATA_PROCESSED / "fx"
     out_dir.parent.mkdir(parents=True, exist_ok=True)

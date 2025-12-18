@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import textwrap
 from typing import Dict, Any
+
+# Matplotlib schreibt Cache/Font-Cache. In manchen Umgebungen ist ~/.matplotlib nicht beschreibbar.
+# /tmp ist typischerweise beschreibbar und verhindert Warnungen/Probleme beim PDF-Rendern.
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl")
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib
 
@@ -207,8 +213,9 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
 
     # y steuert die vertikale Position (von oben nach unten)
     y = 0.9
-    # kleinerer Zeilenabstand, damit mehr Text auf die Seite passt
-    line_height = 0.028
+    # kleinerer Zeilenabstand, damit auch bei langen Experiment-IDs/Parametern
+    # nichts am unteren Rand abgeschnitten wird.
+    line_height = 0.026
 
     def write(text: str, *, size: int = 8, bold: bool = False, max_width: int = 100) -> None:
         """Hilfsfunktion, um Textzeilen zu schreiben.
@@ -475,13 +482,29 @@ def _plot_binary_metrics(pdf: PdfPages, results: Dict[str, Any], key: str, pos_l
     metrics = results[key]
     splits = ["train", "val", "test"]
 
+    def _safe_stats(report: Dict[str, Any], label: str) -> Dict[str, float]:
+        """Return stats for a class label; fall back to NaN if missing (e.g. empty split / single-class)."""
+        if not isinstance(report, dict):
+            report = {}
+        stats = report.get(label)
+        if not isinstance(stats, dict):
+            # sklearn's output_dict uses string labels; keep a defensive fallback anyway.
+            stats = report.get(str(label))
+        if not isinstance(stats, dict):
+            return {"precision": float("nan"), "recall": float("nan"), "f1-score": float("nan")}
+        return {
+            "precision": float(stats.get("precision", float("nan"))),
+            "recall": float(stats.get("recall", float("nan"))),
+            "f1-score": float(stats.get("f1-score", float("nan"))),
+        }
+
     prec = []
     rec = []
     f1 = []
 
     for split in splits:
         rep = metrics[split]["report"]
-        stats = rep[pos_label]
+        stats = _safe_stats(rep, pos_label)
         prec.append(stats["precision"])
         rec.append(stats["recall"])
         f1.append(stats["f1-score"])
@@ -504,7 +527,8 @@ def _plot_binary_metrics(pdf: PdfPages, results: Dict[str, Any], key: str, pos_l
     fig.text(
         0.01,
         0.02,
-        "Abbildung: Precision, Recall und F1 der positiven Klasse je Split (train/val/test).",
+        "Abbildung: Precision, Recall und F1 der positiven Klasse je Split (train/val/test). "
+        "Hinweis: leere/degenerierte Splits werden als NaN dargestellt.",
         fontsize=8,
     )
     pdf.savefig(fig)
@@ -525,10 +549,30 @@ def _add_binary_tables_page(
     metrics = results[key]
     splits = ["train", "val", "test"]
 
+    def _safe_stats(report: Dict[str, Any], label: str) -> Dict[str, float]:
+        if not isinstance(report, dict):
+            report = {}
+        stats = report.get(label)
+        if not isinstance(stats, dict):
+            stats = report.get(str(label))
+        if not isinstance(stats, dict):
+            return {
+                "precision": float("nan"),
+                "recall": float("nan"),
+                "f1-score": float("nan"),
+                "support": float("nan"),
+            }
+        return {
+            "precision": float(stats.get("precision", float("nan"))),
+            "recall": float(stats.get("recall", float("nan"))),
+            "f1-score": float(stats.get("f1-score", float("nan"))),
+            "support": float(stats.get("support", float("nan"))),
+        }
+
     rows = []
     for split in splits:
         rep = metrics[split]["report"]
-        stats = rep[pos_label]
+        stats = _safe_stats(rep, pos_label)
         rows.append(
             [
                 split,
@@ -710,11 +754,21 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     """
     sns.set(style="white")
 
+    def _normalize_cm(cm_raw: Any, n: int) -> tuple[np.ndarray, bool]:
+        """Return an (n,n) confusion matrix; flag True if original was missing/invalid."""
+        try:
+            cm = np.array(cm_raw, dtype=int)
+        except Exception:
+            return np.zeros((n, n), dtype=int), True
+        if cm.shape != (n, n):
+            return np.zeros((n, n), dtype=int), True
+        return cm, False
+
     # ---------------- Signal: neutral vs. move (train/val/test) ----------------
     splits = ["train", "val", "test"]
     fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
     for ax, split in zip(axes, splits):
-        cm = np.array(results["signal"][split]["confusion_matrix"])
+        cm, missing = _normalize_cm(results["signal"][split].get("confusion_matrix"), 2)
         sns.heatmap(
             cm,
             annot=True,
@@ -724,7 +778,8 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
             yticklabels=["neutral", "move"],
             ax=ax,
         )
-        ax.set_title(f"Signal – {split}")
+        suffix = " (keine Daten)" if missing else ""
+        ax.set_title(f"Signal – {split}{suffix}")
         ax.set_xlabel("Predicted")
         ax.set_ylabel("True")
     plt.tight_layout(rect=(0.02, 0.10, 0.98, 0.95))
@@ -741,7 +796,7 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     # ---------------- Richtung: down vs. up (train/val/test) -------------------
     fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
     for ax, split in zip(axes, splits):
-        cm = np.array(results["direction"][split]["confusion_matrix"])
+        cm, missing = _normalize_cm(results["direction"][split].get("confusion_matrix"), 2)
         sns.heatmap(
             cm,
             annot=True,
@@ -751,7 +806,8 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
             yticklabels=["down", "up"],
             ax=ax,
         )
-        ax.set_title(f"Richtung – {split}")
+        suffix = " (keine Daten)" if missing else ""
+        ax.set_title(f"Richtung – {split}{suffix}")
         ax.set_xlabel("Predicted")
         ax.set_ylabel("True")
     plt.tight_layout(rect=(0.02, 0.10, 0.98, 0.95))
@@ -766,7 +822,7 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     plt.close(fig)
 
     # ---------------- Kombiniert: neutral / up / down (Test) -------------------
-    cm_combined = np.array(results["combined_test"]["confusion_matrix"])
+    cm_combined, missing = _normalize_cm(results.get("combined_test", {}).get("confusion_matrix"), 3)
     fig, ax = plt.subplots(figsize=(4.5, 4.0))
     sns.heatmap(
         cm_combined,
@@ -777,7 +833,8 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
         yticklabels=["neutral", "up", "down"],
         ax=ax,
     )
-    ax.set_title("Confusion Matrix – Test (neutral / up / down)")
+    suffix = " (keine Daten)" if missing else ""
+    ax.set_title(f"Confusion Matrix – Test (neutral / up / down){suffix}")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
     # etwas Platz am unteren Rand für eine zweizeilige Caption lassen
@@ -1233,6 +1290,95 @@ def _compute_trade_return_tp_or_horizon_no_sl(
     return 0.0
 
 
+def _compute_trade_outcome(
+    date: pd.Timestamp,
+    pred_label: str,
+    true_label: str,
+    fx_df: pd.DataFrame,
+    label_params: Dict[str, Any],
+    *,
+    variant: str,
+) -> tuple[float, pd.Timestamp]:
+    """Wie _compute_trade_return*, aber liefert zusätzlich das Exit-Datum.
+
+    variant:
+        - "sl_tp": Stop-Loss + Take-Profit (wie _compute_trade_return)
+        - "tp_only": Take-Profit oder Horizontende, kein Stop-Loss (wie _compute_trade_return_tp_or_horizon_no_sl)
+
+    Wichtig:
+        Das Exit-Datum ist das Datum des Close, an dem die Regel auslöst (oder Horizontende).
+        Falls das Datum nicht in fx_df liegt oder das Segment nicht vollständig ist, wird (0.0, date) geliefert.
+    """
+    pred_label = str(pred_label)
+    true_label = str(true_label)
+    variant = str(variant)
+
+    if pred_label == "neutral":
+        return 0.0, date
+
+    horizon = int(label_params.get("horizon_days", 4))
+    up_thr = float(label_params.get("up_threshold", 0.0))
+    down_thr = float(label_params.get("down_threshold", 0.0))
+
+    try:
+        idx = fx_df.index.get_loc(date)
+    except KeyError:
+        return 0.0, date
+
+    if idx + horizon >= len(fx_df):
+        return 0.0, date
+
+    segment = fx_df["Close"].iloc[idx : idx + horizon + 1].to_numpy()
+    entry = float(segment[0])
+    exit_horizon = fx_df.index[idx + horizon]
+
+    if variant == "tp_only":
+        if pred_label == "up":
+            tp_level = entry * (1 + up_thr)
+            for i, price in enumerate(segment[1:], start=1):
+                if float(price) >= tp_level:
+                    return float(up_thr), fx_df.index[idx + i]
+            return float((segment[-1] - entry) / entry), exit_horizon
+
+        if pred_label == "down":
+            tp_level = entry * (1 + down_thr)
+            for i, price in enumerate(segment[1:], start=1):
+                if float(price) <= tp_level:
+                    return float(-down_thr), fx_df.index[idx + i]
+            return float((entry - segment[-1]) / entry), exit_horizon
+
+        return 0.0, date
+
+    # Default: sl_tp (Variante 1)
+    max_adv = label_params.get("max_adverse_move_pct", 0.01) or 0.01
+
+    # worst case für Trades auf eigentlich neutrale Tage: Stop-Loss (sofort verbucht)
+    if true_label == "neutral":
+        return -float(max_adv), date
+
+    if pred_label == "up":
+        sl_level = entry * (1 - float(max_adv))
+        tp_level = entry * (1 + up_thr)
+        for i, price in enumerate(segment[1:], start=1):
+            if float(price) <= sl_level:
+                return -float(max_adv), fx_df.index[idx + i]
+            if float(price) >= tp_level:
+                return float(up_thr), fx_df.index[idx + i]
+        return float((segment[-1] - entry) / entry), exit_horizon
+
+    if pred_label == "down":
+        sl_level = entry * (1 + float(max_adv))
+        tp_level = entry * (1 + down_thr)
+        for i, price in enumerate(segment[1:], start=1):
+            if float(price) >= sl_level:
+                return -float(max_adv), fx_df.index[idx + i]
+            if float(price) <= tp_level:
+                return float(-down_thr), fx_df.index[idx + i]
+        return float((entry - segment[-1]) / entry), exit_horizon
+
+    return 0.0, date
+
+
 def _add_trade_simulation_rule_page(
     pdf: PdfPages,
     label_params: Dict[str, Any],
@@ -1283,17 +1429,49 @@ def _add_trade_simulation_pages_variant(
     exp_config: Dict[str, Any],
     *,
     trade_return_fn,
+    settle_at_exit: bool = False,
+    outcome_variant: str | None = None,
+    variant_name: str | None = None,
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein."""
     label_params = exp_config.get("label_params", {})
+    title_prefix = f"{variant_name}: " if variant_name else ""
 
     df = preds.copy().sort_values("date")
 
-    # Trade-Return (in %) pro Tag
-    df["trade_return"] = [
-        trade_return_fn(dt, pred, true, fx_df, label_params)
-        for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
-    ]
+    df["date"] = pd.to_datetime(df["date"])
+    df["label_true"] = df["label_true"].astype(str)
+    df["combined_pred"] = df["combined_pred"].astype(str)
+
+    if settle_at_exit:
+        if outcome_variant is None:
+            raise ValueError("outcome_variant muss gesetzt sein, wenn settle_at_exit=True.")
+
+        outcomes = [
+            _compute_trade_outcome(dt, pred, true, fx_df, label_params, variant=outcome_variant)
+            for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+        ]
+        df["trade_return"] = [r for r, _ in outcomes]
+        exit_raw = [ex for _, ex in outcomes]
+
+        dates = pd.DatetimeIndex(df["date"].tolist())
+
+        def book_date(exit_dt: pd.Timestamp) -> pd.Timestamp | pd.NaT:
+            i = dates.searchsorted(pd.Timestamp(exit_dt))
+            if i >= len(dates):
+                return pd.NaT
+            return dates[i]
+
+        df["exit_booked"] = [
+            book_date(ex) if pred in {"up", "down"} else pd.NaT
+            for pred, ex in zip(df["combined_pred"], exit_raw)
+        ]
+    else:
+        # Trade-Return (in %) pro Tag
+        df["trade_return"] = [
+            trade_return_fn(dt, pred, true, fx_df, label_params)
+            for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+        ]
 
     # Strategie A: fixer Einsatz (100 CHF bei up, 100 CHF bei down)
     df["stake_fixed"] = np.where(
@@ -1305,43 +1483,90 @@ def _add_trade_simulation_pages_variant(
 
     # Strategie A mit Hebel 20: P&L skaliert mit Faktor 20
     df["pnl_fixed_lev20"] = df["pnl_fixed"] * 20.0
+    # Entry-basierte P&L behalten (für Kostenmatrix / Winner-Loser-Counts / Totals)
+    df["pnl_fixed_entry"] = df["pnl_fixed"]
+    df["pnl_fixed_lev20_entry"] = df["pnl_fixed_lev20"]
 
     trades_mask = df["stake_fixed"] > 0
     trades_df = df[trades_mask]
 
-    total_pnl_fixed = trades_df["pnl_fixed"].sum()
+    total_pnl_fixed = trades_df["pnl_fixed_entry"].sum()
     n_trades = int(trades_mask.sum())
     n_up_trades = int((trades_df["combined_pred"] == "up").sum())
     n_down_trades = int((trades_df["combined_pred"] == "down").sum())
-    n_win = int((trades_df["pnl_fixed"] > 0).sum())
-    n_loss = int((trades_df["pnl_fixed"] < 0).sum())
+    n_win = int((trades_df["pnl_fixed_entry"] > 0).sum())
+    n_loss = int((trades_df["pnl_fixed_entry"] < 0).sum())
 
-    total_pnl_fixed_lev20 = float(df.loc[trades_mask, "pnl_fixed_lev20"].sum())
+    total_pnl_fixed_lev20 = float(df.loc[trades_mask, "pnl_fixed_lev20_entry"].sum())
 
     # Strategie B: 10 % des Vermögens je Trade (ohne Hebel)
     start_capital = 1000.0
     frac = 0.10
-    capital_before = []
-    capital_after = []
+    capital_before: list[float] = []
+    capital_after: list[float] = []
     capital = start_capital
-    pnl_b = []
+    pnl_b: list[float] = []
 
     # Strategie B mit Hebel 20: paralleler Kapitalverlauf
-    capital_after_lev20 = []
+    capital_after_lev20: list[float] = []
     capital_lev20 = start_capital
-    for r, stake in zip(df["trade_return"], df["stake_fixed"]):
-        capital_before.append(capital)
-        if stake > 0:
-            new_capital = capital * (1.0 + frac * r)
-            pnl_b.append(new_capital - capital)
-            capital = new_capital
-        else:
-            pnl_b.append(0.0)
-        capital_after.append(capital)
-        # Variante mit Hebel 20: Return wird mit 20 skaliert
-        if stake > 0:
-            capital_lev20 = capital_lev20 * (1.0 + frac * r * 20.0)
-        capital_after_lev20.append(capital_lev20)
+
+    if settle_at_exit:
+        pending: dict[pd.Timestamp, float] = {}
+        pending_lev20: dict[pd.Timestamp, float] = {}
+        pnl_b_lev20_daily: list[float] = []
+        stake_b_entry: list[float] = []
+        stake_b_entry_lev20: list[float] = []
+        pnl_b_trade_lev20: list[float] = []
+
+        for dt, r, stake, exit_booked in zip(
+            df["date"], df["trade_return"], df["stake_fixed"], df["exit_booked"]
+        ):
+            capital_before.append(capital)
+            realized = float(pending.pop(dt, 0.0))
+            realized_lev20 = float(pending_lev20.pop(dt, 0.0))
+            capital += realized
+            capital_lev20 += realized_lev20
+            pnl_b.append(realized)
+            pnl_b_lev20_daily.append(realized_lev20)
+
+            if stake > 0 and pd.notna(exit_booked):
+                stake_b = capital * frac
+                stake_b_lev20 = capital_lev20 * frac
+                stake_b_entry.append(stake_b)
+                stake_b_entry_lev20.append(stake_b_lev20)
+
+                pending[pd.Timestamp(exit_booked)] = pending.get(pd.Timestamp(exit_booked), 0.0) + stake_b * float(r)
+                trade_pnl_lev20 = stake_b_lev20 * float(r) * 20.0
+                pending_lev20[pd.Timestamp(exit_booked)] = pending_lev20.get(pd.Timestamp(exit_booked), 0.0) + trade_pnl_lev20
+                pnl_b_trade_lev20.append(trade_pnl_lev20)
+            else:
+                stake_b_entry.append(0.0)
+                stake_b_entry_lev20.append(0.0)
+                pnl_b_trade_lev20.append(0.0)
+
+            capital_after.append(capital)
+            capital_after_lev20.append(capital_lev20)
+
+        df["stake_b_entry"] = stake_b_entry
+        df["stake_b_entry_lev20"] = stake_b_entry_lev20
+        df["pnl_b_trade_lev20"] = pnl_b_trade_lev20
+        df["pnl_b_lev20"] = pnl_b_lev20_daily
+    else:
+        for r, stake in zip(df["trade_return"], df["stake_fixed"]):
+            capital_before.append(capital)
+            if stake > 0:
+                new_capital = capital * (1.0 + frac * r)
+                pnl_b.append(new_capital - capital)
+                capital = new_capital
+            else:
+                pnl_b.append(0.0)
+            capital_after.append(capital)
+            # Variante mit Hebel 20: Return wird mit 20 skaliert
+            if stake > 0:
+                capital_lev20 = capital_lev20 * (1.0 + frac * r * 20.0)
+            capital_after_lev20.append(capital_lev20)
+
     df["capital_before"] = capital_before
     df["capital_after"] = capital_after
     df["pnl_b"] = pnl_b
@@ -1350,10 +1575,24 @@ def _add_trade_simulation_pages_variant(
     min_capital = float(min(capital_after) if capital_after else start_capital)
     final_capital_lev20 = float(capital_lev20)
     min_capital_lev20 = float(min(capital_after_lev20) if capital_after_lev20 else start_capital)
-    # pro-Tag P&L für Strategie B mit Hebel 20
-    prev_cap_lev20 = pd.Series(capital_after_lev20).shift(1).fillna(start_capital).to_numpy()
-    pnl_b_lev20 = (np.array(capital_after_lev20) - prev_cap_lev20).tolist()
-    df["pnl_b_lev20"] = pnl_b_lev20
+    if not settle_at_exit:
+        # pro-Tag P&L für Strategie B mit Hebel 20
+        prev_cap_lev20 = pd.Series(capital_after_lev20).shift(1).fillna(start_capital).to_numpy()
+        pnl_b_lev20 = (np.array(capital_after_lev20) - prev_cap_lev20).tolist()
+        df["pnl_b_lev20"] = pnl_b_lev20
+
+    if settle_at_exit:
+        # Settlement-am-Exit: daily P&L für Strategie A wird am Exit gebucht (überschreibt Plot-Serien).
+        pnl_fixed_settle = np.zeros(len(df), dtype=float)
+        for trade_flag, exit_booked, pnl_entry in zip(
+            trades_mask.to_numpy(), df["exit_booked"], df["pnl_fixed_entry"]
+        ):
+            if bool(trade_flag) and pd.notna(exit_booked):
+                j = df["date"].searchsorted(pd.Timestamp(exit_booked))
+                if 0 <= j < len(pnl_fixed_settle):
+                    pnl_fixed_settle[j] += float(pnl_entry)
+        df["pnl_fixed"] = pnl_fixed_settle.tolist()
+        df["pnl_fixed_lev20"] = (pnl_fixed_settle * 20.0).tolist()
 
     # Kostenmatrizen für Strategie A (fixer Einsatz, ohne Hebel)
     labels_order = ["neutral", "up", "down"]
@@ -1363,7 +1602,7 @@ def _add_trade_simulation_pages_variant(
         for pred_lab in labels_order:
             mask = (df["label_true"] == true_lab) & (df["combined_pred"] == pred_lab)
             cnt = int(mask.sum())
-            total = float(df.loc[mask, "pnl_fixed"].sum())
+            total = float(df.loc[mask, "pnl_fixed_entry"].sum())
             mean = float(total / cnt) if cnt > 0 else 0.0
             cost_total_rows.append([true_lab, pred_lab, cnt, total])
             cost_mean_rows.append([true_lab, pred_lab, mean])
@@ -1393,7 +1632,7 @@ def _add_trade_simulation_pages_variant(
 
     fig, ax = plt.subplots(figsize=(8.27, 3.5))
     ax.axis("off")
-    ax.set_title("Tradesimulation – Strategien A und B (Test-Split)", fontsize=12, weight="bold", pad=10)
+    ax.set_title(f"{title_prefix}Tradesimulation – Strategien A und B (Test-Split)", fontsize=12, weight="bold", pad=10)
 
     table = ax.table(
         cellText=summary_rows[1:],
@@ -1421,7 +1660,7 @@ def _add_trade_simulation_pages_variant(
         fig, ax = plt.subplots(figsize=(8.27, 3.5))
         ax.axis("off")
         ax.set_title(
-            "Kostenmatrix – durchschnittliche Kosten pro Fall (Strategie A, Test-Split)",
+            f"{title_prefix}Kostenmatrix – durchschnittliche Kosten pro Fall (Strategie A, Test-Split)",
             fontsize=12,
             weight="bold",
             pad=10,
@@ -1452,7 +1691,7 @@ def _add_trade_simulation_pages_variant(
         fig, ax = plt.subplots(figsize=(8.27, 3.5))
         ax.axis("off")
         ax.set_title(
-            "Kostenmatrix – Gesamtkosten und Anzahl Trades (Strategie A, Test-Split)",
+            f"{title_prefix}Kostenmatrix – Gesamtkosten und Anzahl Trades (Strategie A, Test-Split)",
             fontsize=12,
             weight="bold",
             pad=10,
@@ -1508,7 +1747,7 @@ def _add_trade_simulation_pages_variant(
         linewidth=2.0,
     )
     ax_top.set_title(
-        "Strategie A vs B – Verlauf des Kapitals (ohne Hebel, Test-Split)",
+        f"{title_prefix}Strategie A vs B – Verlauf des Kapitals (ohne Hebel, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -1643,7 +1882,7 @@ def _add_trade_simulation_pages_variant(
         alpha=0.85,
     )
     ax_top.set_title(
-        "Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (ohne Hebel, Test-Split)",
+        f"{title_prefix}Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (ohne Hebel, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -1708,7 +1947,7 @@ def _add_trade_simulation_pages_variant(
         linewidth=2.0,
     )
     ax_top.set_title(
-        "Strategie A vs B – Verlauf des Kapitals (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B – Verlauf des Kapitals (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -1774,7 +2013,7 @@ def _add_trade_simulation_pages_variant(
         linewidth=2.0,
     )
     ax_top.set_title(
-        "Strategie A vs B – kumulierter P&L (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B – kumulierter P&L (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -1838,7 +2077,7 @@ def _add_trade_simulation_pages_variant(
         alpha=0.85,
     )
     ax_top.set_title(
-        "Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -1878,6 +2117,8 @@ def _add_trade_simulation_pages_variant(
 
     # Zusätzliche Analyse: Gewinn pro Trade über Zeit (Hebel 20), als Balken
     trades = df[df["stake_fixed"] > 0].copy()
+    if settle_at_exit and "exit_booked" in trades.columns:
+        trades = trades[pd.notna(trades["exit_booked"])].copy()
     if not trades.empty:
         fig, (ax_a, ax_b) = plt.subplots(
             2,
@@ -1896,20 +2137,37 @@ def _add_trade_simulation_pages_variant(
             ax.grid(alpha=0.2)
             ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
 
-        # Strategie A: fixer Einsatz, Hebel 20 => pnl_fixed_lev20 ist P&L pro Trade am Tag
+        if settle_at_exit and "exit_booked" in trades.columns:
+            x_trade = trades["exit_booked"]
+            pnl_a_trade = trades["pnl_fixed_lev20_entry"]
+            pnl_b_trade = trades["pnl_b_trade_lev20"]
+            caption = (
+                "Abbildung: Balken zeigen den Gewinn/Verlust pro Trade am Exit-Datum (Settlement). "
+                "Grün = Gewinn, Orange = Verlust. Hebel 20 ist bereits eingerechnet."
+            )
+        else:
+            x_trade = trades["date"]
+            pnl_a_trade = trades["pnl_fixed_lev20"]
+            pnl_b_trade = trades["pnl_b_lev20"]
+            caption = (
+                "Abbildung: Balken zeigen den Gewinn/Verlust pro Trade (nur Tage mit Trade). "
+                "Grün = Gewinn, Orange = Verlust. Hebel 20 ist bereits eingerechnet."
+            )
+
+        # Strategie A: fixer Einsatz, Hebel 20
         bar_signed(
             ax_a,
-            trades["date"],
-            trades["pnl_fixed_lev20"],
-            "Strategie A – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
+            x_trade,
+            pnl_a_trade,
+            f"{title_prefix}Strategie A – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
         )
 
-        # Strategie B: 10% Kapital, Hebel 20 => pnl_b_lev20 ist P&L pro Trade am Tag
+        # Strategie B: 10% Kapital, Hebel 20
         bar_signed(
             ax_b,
-            trades["date"],
-            trades["pnl_b_lev20"],
-            "Strategie B – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
+            x_trade,
+            pnl_b_trade,
+            f"{title_prefix}Strategie B – Gewinn pro Trade (Hebel 20, nur Trade-Tage)",
         )
         ax_b.set_xlabel("Datum")
         ax_b.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
@@ -1922,8 +2180,7 @@ def _add_trade_simulation_pages_variant(
         fig.text(
             0.01,
             0.02,
-            "Abbildung: Balken zeigen den Gewinn/Verlust pro Trade (nur Tage mit Trade). "
-            "Grün = Gewinn, Orange = Verlust. Hebel 20 ist bereits eingerechnet.",
+            caption,
             fontsize=9,
         )
         pdf.savefig(fig)
@@ -1958,7 +2215,7 @@ def _add_trade_simulation_pages_variant(
             label="Strategie B (Hebel 20)",
         )
         ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-        ax.set_title("Gewinn pro Monat (Hebel 20, Test-Split)", fontsize=13, weight="bold")
+        ax.set_title(f"{title_prefix}Gewinn pro Monat (Hebel 20, Test-Split)", fontsize=13, weight="bold")
         ax.set_xlabel("Monat")
         ax.set_ylabel("P&L pro Monat (CHF)")
         ax.grid(alpha=0.2)
@@ -2004,7 +2261,7 @@ def _add_trade_simulation_pages_variant(
         ax.fill_between(t, qb[0], qb[2], color="#c44e52", alpha=0.18, label="B: 10–90% Band")
         ax.plot(t, qb[1], color="#c44e52", linewidth=2.0, label="B: Median")
 
-        ax.set_title("5-Jahres-Projektion (Bootstrap-Monte-Carlo, Hebel 20)", fontsize=13, weight="bold")
+        ax.set_title(f"{title_prefix}5-Jahres-Projektion (Bootstrap-Monte-Carlo, Hebel 20)", fontsize=13, weight="bold")
         ax.set_xlabel("Handelstage in der Zukunft (~5 Jahre)")
         ax.set_ylabel("Kumulierter P&L (CHF)")
         ax.grid(alpha=0.2)
@@ -2026,7 +2283,7 @@ def _add_trade_simulation_pages_variant(
     fig, ax = plt.subplots(figsize=(11.69, 4.6))
     ax.plot(df["date"], pnl_a, label="ohne Hebel", color="#4c72b0", linewidth=2.0)
     ax.plot(df["date"], pnl_a_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--", linewidth=2.0)
-    ax.set_title("Strategie A – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
+    ax.set_title(f"{title_prefix}Strategie A – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
     ax.set_xlabel("Datum")
     ax.set_ylabel("P&L (CHF)")
     ax.grid(alpha=0.3)
@@ -2052,7 +2309,7 @@ def _add_trade_simulation_pages_variant(
     pnl_b_lev20 = df["capital_after_lev20"] - start_capital
     ax.plot(df["date"], pnl_b_cum, label="ohne Hebel", color="#4c72b0", linewidth=2.0)
     ax.plot(df["date"], pnl_b_lev20, label="mit Hebel 20", color="#c44e52", linestyle="--", linewidth=2.0)
-    ax.set_title("Strategie B – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
+    ax.set_title(f"{title_prefix}Strategie B – kumulierter P&L (Test-Split)", fontsize=13, weight="bold")
     ax.set_xlabel("Datum")
     ax.set_ylabel("P&L (CHF)")
     ax.grid(alpha=0.3)
@@ -2083,8 +2340,8 @@ def add_trade_simulation_pages(
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein.
 
-    Neu: Wir erzeugen die Tradesimulation bewusst in zwei Varianten, damit man
-    sieht, wie sensitiv die Resultate auf die Closing-Regel reagieren.
+    Neu: Wir erzeugen die Tradesimulation bewusst in mehreren Varianten, damit man
+    sieht, wie sensitiv die Resultate auf die Closing-Regel und auf den Settlement-Zeitpunkt reagieren.
     """
     label_params = exp_config.get("label_params", {})
 
@@ -2104,6 +2361,7 @@ def add_trade_simulation_pages(
         fx_df,
         exp_config,
         trade_return_fn=_compute_trade_return,
+        variant_name="Variante 1",
     )
 
     _add_trade_simulation_rule_page(
@@ -2122,6 +2380,29 @@ def add_trade_simulation_pages(
         fx_df,
         exp_config,
         trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
+        variant_name="Variante 2",
+    )
+
+    _add_trade_simulation_rule_page(
+        pdf,
+        label_params,
+        title="Variante 3: TP-only + Settlement am Exit-Datum (Timing realistisch)",
+        bullets=[
+            "Trade wird am Tag t eröffnet (Signal up/down).",
+            "Exit-Datum: erster TP-Hit per Close, sonst Horizontende.",
+            "Gewinn/Verlust wird erst am Exit-Datum im Konto verbucht (nicht am Einstiegstag).",
+            "Zwischen-Trades nutzen deshalb nicht vorzeitig Gewinne/Verluste aus noch offenen Trades.",
+        ],
+    )
+    _add_trade_simulation_pages_variant(
+        pdf,
+        preds,
+        fx_df,
+        exp_config,
+        trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
+        settle_at_exit=True,
+        outcome_variant="tp_only",
+        variant_name="Variante 3",
     )
 
 

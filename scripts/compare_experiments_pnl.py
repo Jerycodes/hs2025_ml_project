@@ -7,6 +7,7 @@ Erzeugt eine Grafik (PNG/PDF), die zwei Experimente übereinander legt
 Standard:
     - Strategie B (10% Kapital) als kumulierter P&L
     - Hebel 20
+    - Variante 2 (TP-only, kein Stop-Loss)
 
 Beispiel:
     python3 -m scripts.compare_experiments_pnl \
@@ -14,6 +15,7 @@ Beispiel:
         --exp-b hv_long_final_yahoo \
         --strategy B \
         --leverage 20 \
+        --variant tp_only \
         --output notebooks/results/final_two_stage/pdf/compare_hp_long_vs_hv_long_pnlB_lev20.pdf
 """
 
@@ -21,8 +23,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Literal
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl")
 
 import matplotlib
 
@@ -37,10 +42,13 @@ from scripts.generate_two_stage_report import (
     load_predictions,
     load_fx_labels_for_exp,
     _compute_trade_return,
+    _compute_trade_return_tp_or_horizon_no_sl,
+    _compute_trade_outcome,
 )
 
 
 Strategy = Literal["A", "B"]
+Variant = Literal["sl_tp", "tp_only", "sl_tp_exit", "tp_only_exit"]
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -67,6 +75,7 @@ def _compute_strategy_series(
     exp_id: str,
     *,
     strategy: Strategy,
+    variant: Variant,
     leverage: float,
     stake_fixed_chf: float,
     frac_capital: float,
@@ -88,13 +97,58 @@ def _compute_strategy_series(
     df["label_true"] = df["label_true"].astype(str)
     df["combined_pred"] = df["combined_pred"].astype(str)
 
-    df["trade_return"] = [
-        _compute_trade_return(dt, pred, true, fx, label_params)
-        for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
-    ]
+    settle_at_exit = str(variant).endswith("_exit")
+    base_variant = str(variant).replace("_exit", "")
+    if base_variant not in {"sl_tp", "tp_only"}:
+        raise ValueError(f"Unbekannte variant: {variant}")
 
     is_trade = df["combined_pred"].isin(["up", "down"]).astype(int)
     df["is_trade"] = is_trade
+
+    if settle_at_exit:
+        dates = pd.DatetimeIndex(df["date"].tolist())
+
+        def book_date(exit_dt: pd.Timestamp) -> pd.Timestamp | None:
+            i = dates.searchsorted(pd.Timestamp(exit_dt))
+            if i >= len(dates):
+                return None
+            return dates[i]
+
+        if strategy == "A":
+            pending: dict[pd.Timestamp, float] = {}
+            pnl_cum: list[float] = []
+            cum = 0.0
+            for dt, pred, true_lab in zip(df["date"], df["combined_pred"], df["label_true"]):
+                cum += float(pending.pop(dt, 0.0))
+                if pred in {"up", "down"}:
+                    r, exit_dt = _compute_trade_outcome(dt, pred, true_lab, fx, label_params, variant=base_variant)
+                    booked = book_date(exit_dt)
+                    if booked is not None:
+                        pending[booked] = pending.get(booked, 0.0) + float(stake_fixed_chf) * float(r) * float(leverage)
+                pnl_cum.append(cum)
+            return pd.DataFrame({"date": df["date"], "pnl_cum": pnl_cum})
+
+        # strategy B: Settlement am Exit (P&L wirkt erst beim Schließen auf Kapital)
+        pending: dict[pd.Timestamp, float] = {}
+        capital = float(start_capital)
+        pnl_cum: list[float] = []
+        for dt, pred, true_lab in zip(df["date"], df["combined_pred"], df["label_true"]):
+            capital += float(pending.pop(dt, 0.0))
+            if pred in {"up", "down"}:
+                r, exit_dt = _compute_trade_outcome(dt, pred, true_lab, fx, label_params, variant=base_variant)
+                booked = book_date(exit_dt)
+                if booked is not None:
+                    stake_b = float(frac_capital) * float(capital)
+                    pending[booked] = pending.get(booked, 0.0) + stake_b * float(r) * float(leverage)
+            pnl_cum.append(capital - float(start_capital))
+        return pd.DataFrame({"date": df["date"], "pnl_cum": pnl_cum})
+
+    # Settlement sofort (Variante 1/2 wie bisher)
+    trade_return_fn = _compute_trade_return if base_variant == "sl_tp" else _compute_trade_return_tp_or_horizon_no_sl
+    df["trade_return"] = [
+        trade_return_fn(dt, pred, true, fx, label_params)
+        for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+    ]
 
     if strategy == "A":
         stake = df["is_trade"] * float(stake_fixed_chf)
@@ -141,6 +195,18 @@ def main() -> None:
     )
     parser.add_argument("--strategy", choices=["A", "B"], default="B", help="A=fixed stake, B=10%% Kapital")
     parser.add_argument("--leverage", type=float, default=20.0, help="Hebel (z.B. 1 oder 20)")
+    parser.add_argument(
+        "--variant",
+        choices=["sl_tp", "tp_only", "sl_tp_exit", "tp_only_exit"],
+        default="tp_only",
+        help=(
+            "Tradesimulation: "
+            "sl_tp=SL+TP (Variante 1, sofort verbucht), "
+            "tp_only=TP/Horizontende (Variante 2, sofort verbucht), "
+            "sl_tp_exit=Variante 1 aber P&L erst am Exit verbucht, "
+            "tp_only_exit=Variante 2 aber P&L erst am Exit verbucht (Variante 3)."
+        ),
+    )
     parser.add_argument("--stake-fixed", type=float, default=100.0, help="Einsatz pro Trade (Strategie A)")
     parser.add_argument("--frac-capital", type=float, default=0.10, help="Kapitalanteil pro Trade (Strategie B)")
     parser.add_argument("--start-capital", type=float, default=1000.0, help="Startkapital (Strategie B)")
@@ -156,6 +222,7 @@ def main() -> None:
         project_root,
         exp_a,
         strategy=strategy,
+        variant=args.variant,
         leverage=args.leverage,
         stake_fixed_chf=args.stake_fixed,
         frac_capital=args.frac_capital,
@@ -166,6 +233,7 @@ def main() -> None:
         project_root,
         exp_b,
         strategy=strategy,
+        variant=args.variant,
         leverage=args.leverage,
         stake_fixed_chf=args.stake_fixed,
         frac_capital=args.frac_capital,
@@ -195,8 +263,16 @@ def main() -> None:
     label_b = args.label_b or default_label_b
     suffix_a = f" ({label_a})" if label_a else ""
     suffix_b = f" ({label_b})" if label_b else ""
+    if args.variant == "tp_only":
+        variant_hint = "Variante 2 (TP-only, sofort)"
+    elif args.variant == "sl_tp":
+        variant_hint = "Variante 1 (SL+TP, sofort)"
+    elif args.variant == "tp_only_exit":
+        variant_hint = "Variante 3 (TP-only, Settlement am Exit)"
+    else:
+        variant_hint = "Variante 3 (SL+TP, Settlement am Exit)"
     title = (
-        f"Vergleich: {label_strat} – kumulierter P&L als Punkte (Hebel {args.leverage:g}, Test)\n"
+        f"Vergleich: {label_strat} – kumulierter P&L als Punkte (Hebel {args.leverage:g}, Test, {variant_hint})\n"
         f"{exp_a}{suffix_a} vs {exp_b}{suffix_b}"
     )
 
@@ -230,7 +306,9 @@ def main() -> None:
         alpha=0.30,
     )
     ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    ax_bot.set_ylabel("Δ (mit − ohne)\n(CHF)")
+    delta_label_left = label_a or exp_a
+    delta_label_right = label_b or exp_b
+    ax_bot.set_ylabel(f"Δ ({delta_label_right} − {delta_label_left})\n(CHF)")
     ax_bot.set_xlabel("Datum")
     ax_bot.grid(alpha=0.15)
     ax_bot.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))

@@ -120,6 +120,29 @@ def train_xgb_binary(
     scale_pos_weight hilft bei stark unausgeglichenen Klassen:
         typischer Wert ≈ N_negative / N_positive.
     """
+    # Guardrails: XGBoost/Sklearn geben sonst sehr kryptische Fehler/Warnungen aus.
+    if X_train is None or len(X_train) == 0:
+        raise ValueError(
+            "train_xgb_binary: X_train ist leer (0 Zeilen). "
+            "Ursache ist meist ein Split ohne Samples oder ein Filter (z.B. signal==1) "
+            "der alle Zeilen entfernt."
+        )
+    if hasattr(X_train, "shape") and X_train.shape[1] == 0:
+        raise ValueError(
+            "train_xgb_binary: X_train hat 0 Feature-Spalten. "
+            "Prüfe feature_cols / get_feature_cols() und ob die erwarteten Spalten im CSV existieren."
+        )
+    unique, counts = np.unique(y_train, return_counts=True)
+    if len(unique) < 2:
+        details = ", ".join(f"{int(u)}: {int(c)}" for u, c in zip(unique, counts))
+        raise ValueError(
+            "train_xgb_binary: y_train enthält nur eine Klasse "
+            f"(unique={unique.tolist()}, counts={{{details}}}). "
+            "Für ein binäres Modell (neutral/move oder down/up) braucht es beide Klassen. "
+            "Ursachen: zu strenges Labeling (Thresholds), falsches test_start/Splitting, "
+            "oder bei Stufe 2: im Train-Split fehlen z.B. alle 'down' oder alle 'up'."
+        )
+
     if scale_pos_weight is None:
         # automatischer Vorschlag bei Binary Labels 0/1
         n_pos = (y_train == 1).sum()
@@ -138,13 +161,19 @@ def train_xgb_binary(
         random_state=42,
     )
 
-    model.fit(
-        X_train,
-        y_train,
-        eval_set=[(X_val, y_val)],
-        early_stopping_rounds=50,
-        verbose=False,
-    )
+    use_eval = X_val is not None and len(X_val) > 0 and y_val is not None and len(y_val) > 0
+    if use_eval:
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            early_stopping_rounds=50,
+            verbose=False,
+        )
+    else:
+        # Kein Val-Split verfügbar (z.B. wenn im Val-Zeitraum keine signal==1 Fälle existieren).
+        # Dann ohne Early-Stopping trainieren.
+        model.fit(X_train, y_train, verbose=False)
     return model
 
 
