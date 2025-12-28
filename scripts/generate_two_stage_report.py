@@ -1914,6 +1914,7 @@ def _add_trade_simulation_pages_variant(
         pnl_b_trade_booked_lev20 = np.zeros(len(df), dtype=float)
         pnl_c_trade_booked_lev20 = np.zeros(len(df), dtype=float)
         trade_events_c: list[dict[str, float | pd.Timestamp]] = []
+        trade_events_b: list[dict[str, float | pd.Timestamp]] = []
 
         for i, (dt, r, stake, exit_booked, pred) in enumerate(
             zip(df["date"], df["trade_return"], df["stake_fixed"], df["exit_booked"], pred_arr)
@@ -1952,6 +1953,17 @@ def _add_trade_simulation_pages_variant(
                 pending_lev20[exit_ts] = pending_lev20.get(exit_ts, 0.0) + trade_pnl_lev20
                 pnl_b_trade_booked_lev20[j] += trade_pnl_lev20
                 pnl_b_trade_lev20.append(trade_pnl_lev20)
+
+                trade_events_b.append(
+                    {
+                        "entry_date": pd.Timestamp(dt),
+                        "exit_date": exit_ts,
+                        "stake_chf": float(stake_b),
+                        "pnl_chf": float(trade_pnl_b),
+                        "stake_chf_lev20": float(stake_b_lev20),
+                        "pnl_chf_lev20": float(trade_pnl_lev20),
+                    }
+                )
 
                 # Strategie C: stake via FLEX risk_per_trade
                 if flex_ok:
@@ -1994,6 +2006,8 @@ def _add_trade_simulation_pages_variant(
                                 "exit_date": exit_ts,
                                 "stake_chf": float(stake_c),
                                 "pnl_chf": float(trade_pnl_c),
+                                "stake_chf_lev20": float(stake_c_lev20),
+                                "pnl_chf_lev20": float(trade_pnl_c_lev20),
                                 "risk_per_trade": float(risk),
                                 "risk_raw": float(risk_raw),
                                 "risk_mult": float(flex_risk_mult),
@@ -2038,6 +2052,7 @@ def _add_trade_simulation_pages_variant(
         df["pnl_b_trade_booked_lev20"] = pnl_b_trade_booked_lev20
         df["pnl_c_trade_booked_lev20"] = pnl_c_trade_booked_lev20
         df.attrs["trade_events_c"] = trade_events_c
+        df.attrs["trade_events_b"] = trade_events_b
         if flex_note is not None:
             # keep it short for the PDF; avoid multi-line CLI spam inside table cells
             note = " ".join(str(flex_note).split())
@@ -2291,19 +2306,28 @@ def _add_trade_simulation_pages_variant(
                     trades_c["trade_id"] = np.arange(1, len(trades_c) + 1)
 
                     # Plot 1: each trade on its own x-position (so mapping is unambiguous)
+                    # Use leverage-20 P&L + stake (requested).
                     fig, ax1 = plt.subplots(figsize=(11.69, 5.2))
                     ax2 = ax1.twinx()
-                    pnl = trades_c["pnl_chf"].astype(float).to_numpy()
-                    stake = trades_c["stake_chf"].astype(float).to_numpy()
+                    pnl = trades_c.get("pnl_chf_lev20", trades_c["pnl_chf"]).astype(float).to_numpy()
+                    stake = trades_c.get("stake_chf_lev20", trades_c["stake_chf"]).astype(float).to_numpy()
                     colors = np.where(pnl >= 0, "#2ca02c", "#d62728")
-                    ax1.bar(trades_c["trade_id"], pnl, color=colors, alpha=0.75, label="P&L pro Trade (CHF)")
+                    ax1.bar(trades_c["trade_id"], pnl, color=colors, alpha=0.75, label="P&L pro Trade (CHF, Hebel 20)")
                     ax1.axhline(0.0, color="black", linewidth=1, alpha=0.6)
                     ax1.set_xlabel("Trade-ID (nach Exit-Datum sortiert)")
                     ax1.set_ylabel("P&L pro Trade (CHF)")
-                    ax2.plot(trades_c["trade_id"], stake, color="#1f77b4", marker="o", linewidth=1.5, markersize=3, label="Einsatz (CHF)")
+                    ax2.plot(
+                        trades_c["trade_id"],
+                        stake,
+                        color="#1f77b4",
+                        marker="o",
+                        linewidth=1.5,
+                        markersize=3,
+                        label="Einsatz (CHF, Hebel 20)",
+                    )
                     ax2.set_ylabel("Einsatz (CHF)")
                     ax1.set_title(
-                        f"{title_prefix}Strategie C (FLEX) – Trade-ID vs P&L (Balken) und Einsatz (Linie)",
+                        f"{title_prefix}Strategie C (FLEX) – Trade-ID vs P&L (Hebel 20) und Einsatz",
                         fontsize=13,
                         weight="bold",
                     )
@@ -2317,6 +2341,47 @@ def _add_trade_simulation_pages_variant(
                     fig.tight_layout()
                     pdf.savefig(fig)
                     plt.close(fig)
+
+                    # Same Trade-ID plot for Strategy B (leverage 20)
+                    trade_events_b = df.attrs.get("trade_events_b") or []
+                    if isinstance(trade_events_b, list) and len(trade_events_b) > 0:
+                        trades_b = pd.DataFrame(trade_events_b)
+                        trades_b = trades_b[pd.notna(trades_b.get("exit_date"))].copy()
+                        if not trades_b.empty:
+                            trades_b = trades_b.sort_values("exit_date").reset_index(drop=True)
+                            trades_b["trade_id"] = np.arange(1, len(trades_b) + 1)
+                            fig, ax1 = plt.subplots(figsize=(11.69, 5.2))
+                            ax2 = ax1.twinx()
+                            pnl_b = trades_b.get("pnl_chf_lev20", trades_b["pnl_chf"]).astype(float).to_numpy()
+                            stake_b = trades_b.get("stake_chf_lev20", trades_b["stake_chf"]).astype(float).to_numpy()
+                            colors_b = np.where(pnl_b >= 0, "#2ca02c", "#d62728")
+                            ax1.bar(trades_b["trade_id"], pnl_b, color=colors_b, alpha=0.75, label="P&L pro Trade (CHF, Hebel 20)")
+                            ax1.axhline(0.0, color="black", linewidth=1, alpha=0.6)
+                            ax1.set_xlabel("Trade-ID (nach Exit-Datum sortiert)")
+                            ax1.set_ylabel("P&L pro Trade (CHF)")
+                            ax2.plot(
+                                trades_b["trade_id"],
+                                stake_b,
+                                color="#1f77b4",
+                                marker="o",
+                                linewidth=1.5,
+                                markersize=3,
+                                label="Einsatz (CHF, Hebel 20)",
+                            )
+                            ax2.set_ylabel("Einsatz (CHF)")
+                            ax1.set_title(
+                                f"{title_prefix}Strategie B (fix 10%) – Trade-ID vs P&L (Hebel 20) und Einsatz",
+                                fontsize=13,
+                                weight="bold",
+                            )
+                            step = 10 if len(trades_b) > 60 else 5
+                            ax1.set_xticks(list(range(0, len(trades_b) + 1, step)))
+                            h1, l1 = ax1.get_legend_handles_labels()
+                            h2, l2 = ax2.get_legend_handles_labels()
+                            ax1.legend(h1 + h2, l1 + l2, loc="upper left")
+                            fig.tight_layout()
+                            pdf.savefig(fig)
+                            plt.close(fig)
 
                     # Plot 2: stake vs P&L scatter (overview)
                     trades_c["pnl_sign"] = np.where(trades_c["pnl_chf"] >= 0, "win", "loss")
