@@ -2203,6 +2203,7 @@ def _add_trade_simulation_pages_variant(
         ["B (10% vom Kapital)", "Minimum Kapital (CHF)", f"{min_capital:.2f}"],
         ["B (10% vom Kapital, Hebel 20)", "Endkapital (CHF)", f"{final_capital_lev20:.2f}"],
         ["B (10% vom Kapital, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_lev20:.2f}"],
+        ["B (Hebel 20)", "Effektive Exposure pro Trade", f"{frac*20:.1f}x Equity (10%*20)"],
     ]
     # Strategie C Summary (nur wenn settle_at_exit und wir die C-Serien haben)
     if settle_at_exit and "capital_after_c" in df.columns:
@@ -2231,6 +2232,41 @@ def _add_trade_simulation_pages_variant(
             ["C (FLEX)", "SigConf-Norm", f"norm via q{int(100*df.attrs.get('flex_sig_q_lo',0.2))}/q{int(100*df.attrs.get('flex_sig_q_hi',0.8))}"],
         ]
         flex_note = str(df.attrs.get("flex_note") or "")
+
+    # Sanity checks: ensure P&L daily sums match capital deltas (helps diagnose "too high" gains).
+    try:
+        b_err = float(
+            np.max(np.abs((start_capital + df["pnl_b"].cumsum()).to_numpy() - df["capital_after"].to_numpy()))
+        )
+        b20_err = float(
+            np.max(
+                np.abs((start_capital + df["pnl_b_lev20"].cumsum()).to_numpy() - df["capital_after_lev20"].to_numpy())
+            )
+        )
+        summary_rows += [
+            ["Sanity", "max|cum(pnl_b) - (cap_b-start)|", f"{b_err:.6f}"],
+            ["Sanity", "max|cum(pnl_b_lev20) - (cap_b_lev20-start)|", f"{b20_err:.6f}"],
+        ]
+        if settle_at_exit and "pnl_c" in df.columns and "capital_after_c" in df.columns:
+            c_err = float(
+                np.max(
+                    np.abs((start_capital + df["pnl_c"].cumsum()).to_numpy() - df["capital_after_c"].to_numpy())
+                )
+            )
+            c20_err = float(
+                np.max(
+                    np.abs(
+                        (start_capital + df["pnl_c_lev20"].cumsum()).to_numpy()
+                        - df["capital_after_c_lev20"].to_numpy()
+                    )
+                )
+            )
+            summary_rows += [
+                ["Sanity", "max|cum(pnl_c) - (cap_c-start)|", f"{c_err:.6f}"],
+                ["Sanity", "max|cum(pnl_c_lev20) - (cap_c_lev20-start)|", f"{c20_err:.6f}"],
+            ]
+    except Exception:
+        pass
 
     fig, ax = plt.subplots(figsize=(11.69, 8.27))
     ax.axis("off")
@@ -2799,6 +2835,10 @@ def _add_trade_simulation_pages_variant(
     capital_a_lev20 = start_capital + df["pnl_fixed_lev20"].cumsum()
     capital_b_lev20 = df["capital_after_lev20"]
     diff_ba_lev20 = capital_b_lev20 - capital_a_lev20
+    has_c_lev20 = settle_at_exit and "capital_after_c_lev20" in df.columns
+    if has_c_lev20:
+        capital_c_lev20 = df["capital_after_c_lev20"]
+        diff_ca_lev20 = capital_c_lev20 - capital_a_lev20
 
     fig, (ax_top, ax_bot) = plt.subplots(
         2,
@@ -2821,8 +2861,16 @@ def _add_trade_simulation_pages_variant(
         color="#c44e52",
         linewidth=2.0,
     )
+    if has_c_lev20:
+        ax_top.plot(
+            df["date"],
+            capital_c_lev20,
+            label="Strategie C (FLEX) – Kapital (Hebel 20)",
+            color="#dd8452",
+            linewidth=2.0,
+        )
     ax_top.set_title(
-        f"{title_prefix}Strategie A vs B – Verlauf des Kapitals (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B (vs C) – Verlauf des Kapitals (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -2839,6 +2887,8 @@ def _add_trade_simulation_pages_variant(
         color="#8172b2",
         alpha=0.35,
     )
+    if has_c_lev20:
+        ax_bot.plot(df["date"], diff_ca_lev20, color="#dd8452", linewidth=1.5, label="Δ (C−A)")
     ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
     ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
     ax_bot.set_xlabel("Datum")
@@ -2854,8 +2904,8 @@ def _add_trade_simulation_pages_variant(
     fig.text(
         0.01,
         0.02,
-        "Abbildung: Oben Kapitalverlauf (CHF) für Strategie A und B mit Hebel 20. "
-        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        "Abbildung: Oben Kapitalverlauf (CHF) für Strategie A und B (optional C) mit Hebel 20. "
+        "Unten Balken: Δ = (B − A) je Tag; Linie: Δ = (C − A) falls verfügbar.",
         fontsize=9,
     )
     pdf.savefig(fig)
@@ -2865,6 +2915,9 @@ def _add_trade_simulation_pages_variant(
     pnl_a_lev20 = df["pnl_fixed_lev20"].cumsum()
     pnl_b_cum_lev20 = df["capital_after_lev20"] - start_capital
     diff_pnl_ba_lev20 = pnl_b_cum_lev20 - pnl_a_lev20
+    if has_c_lev20:
+        pnl_c_cum_lev20 = df["capital_after_c_lev20"] - start_capital
+        diff_pnl_ca_lev20 = pnl_c_cum_lev20 - pnl_a_lev20
 
     fig, (ax_top, ax_bot) = plt.subplots(
         2,
@@ -2887,8 +2940,16 @@ def _add_trade_simulation_pages_variant(
         color="#c44e52",
         linewidth=2.0,
     )
+    if has_c_lev20:
+        ax_top.plot(
+            df["date"],
+            pnl_c_cum_lev20,
+            label="Strategie C (FLEX) – P&L (Hebel 20)",
+            color="#dd8452",
+            linewidth=2.0,
+        )
     ax_top.set_title(
-        f"{title_prefix}Strategie A vs B – kumulierter P&L (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B (vs C) – kumulierter P&L (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -2905,6 +2966,8 @@ def _add_trade_simulation_pages_variant(
         color="#8172b2",
         alpha=0.35,
     )
+    if has_c_lev20:
+        ax_bot.plot(df["date"], diff_pnl_ca_lev20, color="#dd8452", linewidth=1.5, label="Δ (C−A)")
     ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
     ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
     ax_bot.set_xlabel("Datum")
@@ -2920,8 +2983,8 @@ def _add_trade_simulation_pages_variant(
     fig.text(
         0.01,
         0.02,
-        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L, CHF) für Strategie A und B mit Hebel 20. "
-        "Unten Balken: Differenz Δ = (B − A) je Tag.",
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L, CHF) für Strategie A und B (optional C) mit Hebel 20. "
+        "Unten Balken: Δ = (B − A) je Tag; Linie: Δ = (C − A) falls verfügbar.",
         fontsize=9,
     )
     pdf.savefig(fig)
@@ -2951,8 +3014,17 @@ def _add_trade_simulation_pages_variant(
         s=18,
         alpha=0.85,
     )
+    if has_c_lev20:
+        ax_top.scatter(
+            df["date"],
+            pnl_c_cum_lev20,
+            label="Strategie C (FLEX) – kumulierter P&L (Hebel 20)",
+            color="#dd8452",
+            s=18,
+            alpha=0.85,
+        )
     ax_top.set_title(
-        f"{title_prefix}Strategie A vs B – kumulierter Gewinn (P&L) als Punkte (Hebel 20, Test-Split)",
+        f"{title_prefix}Strategie A vs B (vs C) – kumulierter Gewinn (P&L) als Punkte (Hebel 20, Test-Split)",
         fontsize=13,
         weight="bold",
         pad=10,
@@ -2969,6 +3041,8 @@ def _add_trade_simulation_pages_variant(
         color="#8172b2",
         alpha=0.35,
     )
+    if has_c_lev20:
+        ax_bot.plot(df["date"], diff_pnl_ca_lev20, color="#dd8452", linewidth=1.5, label="Δ (C−A)")
     ax_bot.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
     ax_bot.set_ylabel("Δ (B−A)\n(CHF)")
     ax_bot.set_xlabel("Datum")
@@ -2984,7 +3058,8 @@ def _add_trade_simulation_pages_variant(
     fig.text(
         0.01,
         0.02,
-        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L) als Punkte. Unten Balken: Differenz Δ = (B − A) je Tag.",
+        "Abbildung: Oben kumulierter Gewinn/Verlust (P&L) als Punkte. Unten Balken: Δ = (B − A) je Tag; "
+        "Linie: Δ = (C − A) falls verfügbar.",
         fontsize=9,
     )
     pdf.savefig(fig)
