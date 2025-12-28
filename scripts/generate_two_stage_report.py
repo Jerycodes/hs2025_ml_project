@@ -1665,6 +1665,7 @@ def _add_trade_simulation_pages_variant(
     outcome_variant: str | None = None,
     variant_name: str | None = None,
     model_prefix: str = "",
+    strategy_b_mode: str = "fixed_frac",
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein."""
     label_params = exp_config.get("label_params", {})
@@ -1749,6 +1750,122 @@ def _add_trade_simulation_pages_variant(
     capital_after_lev20: list[float] = []
     capital_lev20 = start_capital
 
+    def _simulate_b_flex() -> tuple[list[float], list[float], list[float], list[float]]:
+        """
+        Strategie B (FLEX): stake_b = risk_per_trade * (frac * capital).
+
+        Inputs an FLEX:
+          - signal_confidence: signal_prob * direction_confidence
+          - volatility: normierte Rolling-Volatilität (aus Close-Returns)
+          - open_trades: approximierte Anzahl offener Trades (0..5)
+
+        Wenn FLEX CLI nicht verfügbar ist oder Parsing fehlschlägt, wird eine
+        Warnseite erzeugt und auf die Standard-Strategie B zurückgefallen.
+        """
+        try:
+            from src.risk.flex_engine import FlexConfig, FlexEngineError, evaluate_risk
+        except Exception:
+            return [], [], [], []
+
+        # Benötigte Spalten aus dem Predictions-CSV
+        required = {"signal_prob", "direction_prob_up", "combined_pred"}
+        if not required.issubset(set(df.columns)):
+            return [], [], [], []
+
+        dates = pd.DatetimeIndex(df["date"].tolist())
+        if len(dates) == 0:
+            return [], [], [], []
+
+        # Volatilität aus Close-Returns (rolling std) und robust auf [0,1] normieren.
+        close = fx_df.get("Close")
+        if close is None:
+            return [], [], [], []
+        fx_close = pd.Series(close).copy()
+        fx_close.index = pd.to_datetime(fx_close.index)
+        vol_raw = fx_close.pct_change().rolling(14).std()
+        vol_on_dates = vol_raw.reindex(dates).astype(float)
+        q05 = float(vol_on_dates.quantile(0.05))
+        q95 = float(vol_on_dates.quantile(0.95))
+        denom = (q95 - q05) if (q95 > q05) else 1.0
+        vol_norm = ((vol_on_dates - q05) / denom).clip(0.0, 1.0).fillna(0.5).to_numpy()
+
+        # open_trades: simple overlap approximation using horizon_days or exit_booked.
+        horizon_days = int(label_params.get("horizon_days", 7) or 7)
+        exit_booked = None
+        if "exit_booked" in df.columns:
+            exit_booked = pd.to_datetime(df["exit_booked"], errors="coerce")
+
+        def est_exit(i: int) -> pd.Timestamp:
+            if exit_booked is not None and i < len(exit_booked) and pd.notna(exit_booked.iloc[i]):
+                return pd.Timestamp(exit_booked.iloc[i])
+            j = min(i + horizon_days, len(dates) - 1)
+            return dates[j]
+
+        flex_cfg = FlexConfig(
+            flex_cmd=os.environ.get("FLEX_CMD", "flex"),
+            rule_path=Path("rules/risk.flex"),
+            extra_args=(),
+            mode=os.environ.get("FLEX_MODE", "auto"),
+        )
+
+        cap_before: list[float] = []
+        cap_after: list[float] = []
+        pnl_daily: list[float] = []
+        stake_entry: list[float] = []
+        cap = float(start_capital)
+        open_exits: list[pd.Timestamp] = []
+
+        for i, (dt, pred, r, p_sig, p_up, v) in enumerate(
+            zip(
+                dates,
+                df["combined_pred"].astype(str).tolist(),
+                df["trade_return"].astype(float).tolist(),
+                df["signal_prob"].astype(float).tolist(),
+                df["direction_prob_up"].astype(float).tolist(),
+                vol_norm.tolist(),
+            )
+        ):
+            cap_before.append(cap)
+
+            # expire open positions
+            open_exits = [ex for ex in open_exits if pd.Timestamp(ex) > pd.Timestamp(dt)]
+            open_tr = float(min(len(open_exits), 5))
+
+            if pred not in {"up", "down"}:
+                pnl_daily.append(0.0)
+                stake_entry.append(0.0)
+                cap_after.append(cap)
+                continue
+
+            dir_conf = float(p_up) if pred == "up" else float(1.0 - p_up)
+            sig_conf = float(max(0.0, min(1.0, float(p_sig) * dir_conf)))
+
+            try:
+                risk = float(
+                    evaluate_risk(
+                        signal_confidence=sig_conf,
+                        volatility=float(v),
+                        open_trades=open_tr,
+                        cfg=flex_cfg,
+                    )
+                )
+            except FlexEngineError:
+                return [], [], [], []
+
+            risk = float(max(0.0, min(1.0, risk)))
+            stake = cap * float(frac) * risk
+            pnl = float(stake) * float(r)
+            cap += pnl
+
+            pnl_daily.append(pnl)
+            stake_entry.append(stake)
+            cap_after.append(cap)
+
+            # book exit for open-trades counting (even if we settle daily; helps risk control)
+            open_exits.append(est_exit(i))
+
+        return cap_before, cap_after, pnl_daily, stake_entry
+
     if settle_at_exit:
         pending: dict[pd.Timestamp, float] = {}
         pending_lev20: dict[pd.Timestamp, float] = {}
@@ -1804,6 +1921,21 @@ def _add_trade_simulation_pages_variant(
             if stake > 0:
                 capital_lev20 = capital_lev20 * (1.0 + frac * r * 20.0)
             capital_after_lev20.append(capital_lev20)
+
+    # Variante 4: Strategie B mit FLEX-Position-Sizing (stake abhängig von risk_per_trade)
+    flex_cap_before: list[float] = []
+    flex_cap_after: list[float] = []
+    flex_pnl: list[float] = []
+    flex_stake: list[float] = []
+    flex_enabled = False
+    if str(strategy_b_mode).lower() == "flex":
+        flex_cap_before, flex_cap_after, flex_pnl, flex_stake = _simulate_b_flex()
+        flex_enabled = bool(flex_cap_after)
+        if flex_enabled:
+            df["capital_before_flex"] = flex_cap_before
+            df["capital_after_flex"] = flex_cap_after
+            df["pnl_b_flex"] = flex_pnl
+            df["stake_b_flex"] = flex_stake
 
     df["capital_before"] = capital_before
     df["capital_after"] = capital_after
@@ -1867,6 +1999,22 @@ def _add_trade_simulation_pages_variant(
         ["B (10% vom Kapital, Hebel 20)", "Endkapital (CHF)", f"{final_capital_lev20:.2f}"],
         ["B (10% vom Kapital, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_lev20:.2f}"],
     ]
+    if str(strategy_b_mode).lower() == "flex":
+        if flex_enabled:
+            final_flex = float(flex_cap_after[-1]) if flex_cap_after else start_capital
+            min_flex = float(min(flex_cap_after)) if flex_cap_after else start_capital
+            mean_stake = float(np.mean([s for s in flex_stake if s > 0])) if any(s > 0 for s in flex_stake) else 0.0
+            summary_rows += [
+                ["B (FLEX)", "Endkapital (CHF)", f"{final_flex:.2f}"],
+                ["B (FLEX)", "Minimum Kapital (CHF)", f"{min_flex:.2f}"],
+                ["B (FLEX)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake:.2f}"],
+                ["B (FLEX)", "FLEX_CMD", os.environ.get("FLEX_CMD", "flex")],
+            ]
+        else:
+            summary_rows += [
+                ["B (FLEX)", "Status", "nicht verfügbar (FLEX CLI/Parsing fehlgeschlagen oder fehlende Proba-Spalten)"],
+                ["B (FLEX)", "Tipp", "Setze FLEX_CMD/FLEX_MODE env vars oder installiere die FLEX CLI."],
+            ]
 
     fig, ax = plt.subplots(figsize=(8.27, 3.5))
     ax.axis("off")
@@ -1892,6 +2040,19 @@ def _add_trade_simulation_pages_variant(
     )
     pdf.savefig(fig)
     plt.close(fig)
+
+    # Extra Seite: FLEX-Kapitalverlauf (falls aktiv)
+    if str(strategy_b_mode).lower() == "flex" and flex_enabled:
+        fig, ax = plt.subplots(figsize=(11.69, 4.0))
+        ax.plot(df["date"], df["capital_after_flex"], label="Strategie B (FLEX) – Kapital", linewidth=2)
+        ax.axhline(start_capital, color="black", linewidth=1, alpha=0.5)
+        ax.set_title(f"{title_prefix}Strategie B (FLEX) – Kapitalverlauf (Test-Split)", fontsize=13, weight="bold")
+        ax.set_xlabel("Datum")
+        ax.set_ylabel("Kapital (CHF)")
+        ax.legend()
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
 
     # Seite 2: Kostenmatrix – durchschnittliche Kosten pro Fall (Strategie A)
     if not cost_mean.empty:
@@ -2658,6 +2819,28 @@ def add_trade_simulation_pages(
         outcome_variant="tp_only",
         variant_name="Variante 3",
         model_prefix=model_prefix,
+    )
+
+    _add_trade_simulation_rule_page(
+        pdf,
+        label_params,
+        title=f"{model_prefix}Variante 4: Strategie B mit FLEX-Positionsgrößen (Risk-Based Sizing)",
+        bullets=[
+            "Trade-Entscheid (up/down) bleibt gleich, aber Einsatz wird pro Trade über Fuzzy-Regeln skaliert.",
+            "Inputs an FLEX: signal_confidence = signal_prob * direction_confidence, volatility (rolling std, normiert), open_trades (0..5).",
+            "Output: risk_per_trade in [0,1] -> stake = risk_per_trade * 10% * aktuelles Kapital.",
+            "Wenn FLEX nicht verfügbar ist (CLI/Parsing), wird Variante 4 im Report als 'nicht verfügbar' markiert.",
+        ],
+    )
+    _add_trade_simulation_pages_variant(
+        pdf,
+        preds_use,
+        fx_df,
+        exp_config,
+        trade_return_fn=_compute_trade_return,
+        variant_name="Variante 4",
+        model_prefix=model_prefix,
+        strategy_b_mode="flex",
     )
 
 
