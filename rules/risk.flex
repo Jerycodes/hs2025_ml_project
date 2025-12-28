@@ -1,0 +1,77 @@
+# Fuzzy rule set for risk sizing.
+#
+# NOTE:
+# - "FLEX" fuzzy engines differ in syntax. This file uses an IEC 61131-7 FCL-like
+#   structure (common across many fuzzy tools).
+# - If your FLEX CLI expects a different format, adapt this file accordingly.
+#
+# Variables
+# - Inputs:
+#   - signal_confidence: 0..1
+#   - volatility:        0..1
+#   - open_trades:       0..5
+# - Output:
+#   - risk_per_trade:    0..1
+#
+# Defuzzification: centroid / center of gravity (COG).
+
+FUNCTION_BLOCK risk
+
+VAR_INPUT
+  signal_confidence : REAL;
+  volatility        : REAL;
+  open_trades       : REAL;
+END_VAR
+
+VAR_OUTPUT
+  risk_per_trade    : REAL;
+END_VAR
+
+FUZZIFY signal_confidence
+  TERM low    := (0.00, 1.00) (0.40, 0.00);
+  TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
+  TERM high   := (0.60, 0.00) (1.00, 1.00);
+END_FUZZIFY
+
+FUZZIFY volatility
+  TERM low    := (0.00, 1.00) (0.40, 0.00);
+  TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
+  TERM high   := (0.60, 0.00) (1.00, 1.00);
+END_FUZZIFY
+
+FUZZIFY open_trades
+  TERM few    := (0.0, 1.0) (2.0, 0.0);
+  TERM medium := (1.0, 0.0) (2.5, 1.0) (4.0, 0.0);
+  TERM many   := (3.0, 0.0) (5.0, 1.0);
+END_FUZZIFY
+
+DEFUZZIFY risk_per_trade
+  TERM low    := (0.00, 1.00) (0.40, 0.00);
+  TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
+  TERM high   := (0.60, 0.00) (1.00, 1.00);
+
+  METHOD  : COG;      # centroid / center of gravity
+  DEFAULT : 0.00;
+END_DEFUZZIFY
+
+RULEBLOCK risk_rules
+  AND  : MIN;
+  OR   : MAX;
+  ACT  : MIN;
+  ACCU : MAX;
+
+  RULE 1 : IF signal_confidence IS high AND volatility IS low AND open_trades IS few
+           THEN risk_per_trade IS high;
+
+  RULE 2 : IF signal_confidence IS medium AND volatility IS medium
+           THEN risk_per_trade IS medium;
+
+  RULE 3 : IF volatility IS high OR open_trades IS many
+           THEN risk_per_trade IS low;
+
+  RULE 4 : IF signal_confidence IS low
+           THEN risk_per_trade IS low;
+END_RULEBLOCK
+
+END_FUNCTION_BLOCK
+
