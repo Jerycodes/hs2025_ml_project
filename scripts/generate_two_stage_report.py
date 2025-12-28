@@ -1654,6 +1654,74 @@ def _add_trade_simulation_rule_page(
     plt.close(fig)
 
 
+def _add_trade_ledger_pages(
+    pdf: PdfPages,
+    trades: pd.DataFrame,
+    *,
+    title: str,
+    rows_per_page: int = 32,
+) -> None:
+    """Add a paginated table with one row per trade (for traceability in PDF)."""
+    if trades.empty:
+        return
+
+    cols = [
+        "trade_id",
+        "entry_date",
+        "exit_date",
+        "stake_chf",
+        "pnl_chf",
+        "risk_per_trade",
+        "signal_confidence",
+        "volatility",
+        "open_trades",
+    ]
+    use = trades.copy()
+    for c in cols:
+        if c not in use.columns:
+            use[c] = np.nan
+
+    use = use[cols].copy()
+    use["entry_date"] = pd.to_datetime(use["entry_date"]).dt.strftime("%Y-%m-%d")
+    use["exit_date"] = pd.to_datetime(use["exit_date"]).dt.strftime("%Y-%m-%d")
+
+    # Format numeric columns to keep table narrow
+    for c in ["stake_chf", "pnl_chf"]:
+        use[c] = use[c].astype(float).map(lambda x: f"{x:.2f}")
+    for c in ["risk_per_trade", "signal_confidence", "volatility"]:
+        use[c] = use[c].astype(float).map(lambda x: f"{x:.3f}")
+    use["open_trades"] = use["open_trades"].astype(float).map(lambda x: f"{x:.0f}")
+
+    n = len(use)
+    for start in range(0, n, rows_per_page):
+        part = use.iloc[start : start + rows_per_page]
+        fig, ax = plt.subplots(figsize=(11.69, 8.27))
+        ax.axis("off")
+        page = 1 + start // rows_per_page
+        pages = int(np.ceil(n / rows_per_page))
+        ax.set_title(f"{title} (Seite {page}/{pages})", fontsize=13, weight="bold", pad=10)
+        table = ax.table(
+            cellText=part.values,
+            colLabels=part.columns.tolist(),
+            loc="center",
+            cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(7)
+        table.scale(1.0, 1.25)
+        fig.subplots_adjust(top=0.90, bottom=0.06)
+        fig.text(
+            0.01,
+            0.02,
+            "Tabelle: Jede Zeile ist ein Trade (Strategie C). Damit kannst du jeden Punkt in den Plots "
+            "über die trade_id/Exit-Datum eindeutig zuordnen.",
+            fontsize=8,
+            alpha=0.9,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
 def _add_trade_simulation_pages_variant(
     pdf: PdfPages,
     preds: pd.DataFrame,
@@ -1793,6 +1861,8 @@ def _add_trade_simulation_pages_variant(
                     extra_args=(),
                     mode=os.environ.get("FLEX_MODE", "auto"),
                 )
+                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
+                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
                 resolved = shutil.which(flex_cfg.flex_cmd)
                 if resolved:
                     try:
@@ -1816,8 +1886,12 @@ def _add_trade_simulation_pages_variant(
             except Exception as e:
                 flex_ok = False
                 flex_note = f"FLEX init fehlgeschlagen: {type(e).__name__}: {str(e).splitlines()[0]}"
+                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
+                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
         else:
             flex_note = "FLEX deaktiviert: Predictions enthalten nicht 'signal_prob' und 'direction_prob_up'."
+            flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
+            flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
 
         # Volatilität aus Close-Returns (rolling std) und robust auf [0,1] normieren.
         dates_idx = pd.DatetimeIndex(df["date"].tolist())
@@ -1895,7 +1969,10 @@ def _add_trade_simulation_pages_variant(
                                 cfg=flex_cfg,  # type: ignore[arg-type]
                             )
                         )
-                        risk = float(max(0.0, min(1.0, risk)))
+                        risk_raw = float(max(0.0, min(1.0, risk)))
+                        # Calibrate risk upward/downward (for stake sizing). Defaults are set to
+                        # increase the average stake a bit; tune via env vars if desired.
+                        risk = float(max(0.0, min(1.0, risk_raw * float(flex_risk_mult) + float(flex_risk_bias))))
 
                         stake_c = cap_c * frac * risk
                         stake_c_lev20 = cap_c_lev20 * frac * risk
@@ -1913,10 +1990,14 @@ def _add_trade_simulation_pages_variant(
                         open_exits_c.append(exit_ts)
                         trade_events_c.append(
                             {
+                                "entry_date": pd.Timestamp(dt),
                                 "exit_date": exit_ts,
                                 "stake_chf": float(stake_c),
                                 "pnl_chf": float(trade_pnl_c),
                                 "risk_per_trade": float(risk),
+                                "risk_raw": float(risk_raw),
+                                "risk_mult": float(flex_risk_mult),
+                                "risk_bias": float(flex_risk_bias),
                                 "signal_confidence": float(sig_conf),
                                 "volatility": float(v),
                                 "open_trades": float(open_tr_c),
@@ -1963,6 +2044,8 @@ def _add_trade_simulation_pages_variant(
             if len(note) > 180:
                 note = note[:177] + "..."
             df.attrs["flex_note"] = note
+        df.attrs["flex_risk_mult"] = float(flex_risk_mult)
+        df.attrs["flex_risk_bias"] = float(flex_risk_bias)
     else:
         for r, stake in zip(df["trade_return"], df["stake_fixed"]):
             capital_before.append(capital)
@@ -2064,10 +2147,11 @@ def _add_trade_simulation_pages_variant(
             ["C (FLEX, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_c_lev20:.2f}"],
             ["C (FLEX, Hebel 20)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake_c_lev20:.2f}"],
             ["C (FLEX)", "FLEX_CMD", os.environ.get("FLEX_CMD", "flex")],
+            ["C (FLEX)", "Risk-Kalibrierung", f"risk = clip(risk_raw*{df.attrs.get('flex_risk_mult', 1.0):.2f} + {df.attrs.get('flex_risk_bias', 0.0):.2f})"],
         ]
         flex_note = str(df.attrs.get("flex_note") or "")
 
-    fig, ax = plt.subplots(figsize=(11.69, 6.8))
+    fig, ax = plt.subplots(figsize=(11.69, 8.27))
     ax.axis("off")
     ax.set_title(f"{title_prefix}Tradesimulation – Strategien A/B/C (Test-Split)", fontsize=12, weight="bold", pad=10)
 
@@ -2078,10 +2162,10 @@ def _add_trade_simulation_pages_variant(
         cellLoc="center",
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1.0, 1.25)
+    table.set_fontsize(7)
+    table.scale(1.0, 1.2)
 
-    fig.subplots_adjust(top=0.88, bottom=0.18)
+    fig.subplots_adjust(top=0.90, bottom=0.14)
     fig.text(
         0.01,
         0.10,
@@ -2203,6 +2287,38 @@ def _add_trade_simulation_pages_variant(
                 trades_c = pd.DataFrame(trade_events_c)
                 trades_c = trades_c[pd.notna(trades_c.get("exit_date"))].copy()
                 if not trades_c.empty:
+                    trades_c = trades_c.sort_values("exit_date").reset_index(drop=True)
+                    trades_c["trade_id"] = np.arange(1, len(trades_c) + 1)
+
+                    # Plot 1: each trade on its own x-position (so mapping is unambiguous)
+                    fig, ax1 = plt.subplots(figsize=(11.69, 5.2))
+                    ax2 = ax1.twinx()
+                    pnl = trades_c["pnl_chf"].astype(float).to_numpy()
+                    stake = trades_c["stake_chf"].astype(float).to_numpy()
+                    colors = np.where(pnl >= 0, "#2ca02c", "#d62728")
+                    ax1.bar(trades_c["trade_id"], pnl, color=colors, alpha=0.75, label="P&L pro Trade (CHF)")
+                    ax1.axhline(0.0, color="black", linewidth=1, alpha=0.6)
+                    ax1.set_xlabel("Trade-ID (nach Exit-Datum sortiert)")
+                    ax1.set_ylabel("P&L pro Trade (CHF)")
+                    ax2.plot(trades_c["trade_id"], stake, color="#1f77b4", marker="o", linewidth=1.5, markersize=3, label="Einsatz (CHF)")
+                    ax2.set_ylabel("Einsatz (CHF)")
+                    ax1.set_title(
+                        f"{title_prefix}Strategie C (FLEX) – Trade-ID vs P&L (Balken) und Einsatz (Linie)",
+                        fontsize=13,
+                        weight="bold",
+                    )
+                    # Reduce clutter on x-axis
+                    step = 10 if len(trades_c) > 60 else 5
+                    ax1.set_xticks(list(range(0, len(trades_c) + 1, step)))
+                    # Combined legend
+                    h1, l1 = ax1.get_legend_handles_labels()
+                    h2, l2 = ax2.get_legend_handles_labels()
+                    ax1.legend(h1 + h2, l1 + l2, loc="upper left")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+                    # Plot 2: stake vs P&L scatter (overview)
                     trades_c["pnl_sign"] = np.where(trades_c["pnl_chf"] >= 0, "win", "loss")
                     fig, ax = plt.subplots(figsize=(11.69, 5.0))
                     colors = np.where(trades_c["pnl_chf"].to_numpy() >= 0, "#2ca02c", "#d62728")
@@ -2224,6 +2340,13 @@ def _add_trade_simulation_pages_variant(
                     fig.tight_layout()
                     pdf.savefig(fig)
                     plt.close(fig)
+
+                    # Table: one row per trade so every point is traceable
+                    _add_trade_ledger_pages(
+                        pdf,
+                        trades_c,
+                        title=f"{title_prefix}Strategie C (FLEX) – Trade Ledger",
+                    )
         except Exception as e:
             fig = plt.figure(figsize=(11.69, 3.5))
             fig.patch.set_facecolor("white")
