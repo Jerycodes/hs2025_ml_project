@@ -44,6 +44,8 @@ class PositionSizingConfig:
     min_position_chf: float = 0.0
     max_position_chf: float | None = None
     round_to_chf: float = 1.0  # 1.0 => round to whole CHF; 0.01 => cents
+    equity_ref_chf: float = 1000.0  # used to normalize equity into [0,1] for FLEX
+    equity_span_ratio: float = 0.50  # +50% equity => equity_norm ~ 1.0, -50% => ~0.0
     flex: FlexConfig = FlexConfig()
 
 
@@ -106,10 +108,15 @@ def size_trade_chf(
     vol_f = float(_clamp(float(volatility), 0.0, 1.0))
 
     signal_conf = compute_signal_confidence(p_move=p_move, p_up=p_up, direction=direction)
+    ref = float(cfg.equity_ref_chf) if float(cfg.equity_ref_chf) > 0 else float(equity_chf)
+    ratio = float(equity_chf) / ref if ref > 0 else 1.0
+    span = float(cfg.equity_span_ratio) if float(cfg.equity_span_ratio) > 0 else 0.5
+    equity_norm = float(_clamp(0.5 + 0.5 * ((ratio - 1.0) / span), 0.0, 1.0))
     risk = evaluate_risk(
         signal_confidence=signal_conf,
         volatility=vol_f,
         open_trades=open_trades_f,
+        equity=equity_norm,
         cfg=cfg.flex,
     )
 
@@ -133,4 +140,3 @@ def size_trade_chf(
         max_stake_chf=max_stake,
         stake_chf=stake,
     )
-

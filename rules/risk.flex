@@ -16,6 +16,7 @@ VAR_INPUT
   signal_confidence : REAL;
   volatility        : REAL;
   open_trades       : REAL;
+  equity            : REAL;
 END_VAR
 
 VAR_OUTPUT
@@ -23,9 +24,9 @@ VAR_OUTPUT
 END_VAR
 
 FUZZIFY signal_confidence
-  TERM low    := (0.00, 1.00) (0.40, 0.00);
-  TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
-  TERM high   := (0.60, 0.00) (1.00, 1.00);
+  TERM low    := (0.00, 1.00) (0.35, 0.00);
+  TERM medium := (0.15, 0.00) (0.50, 1.00) (0.85, 0.00);
+  TERM high   := (0.50, 0.00) (1.00, 1.00);
 END_FUZZIFY
 
 FUZZIFY volatility
@@ -40,10 +41,16 @@ FUZZIFY open_trades
   TERM many   := (3.0, 0.0) (5.0, 1.0);
 END_FUZZIFY
 
+FUZZIFY equity
+  // equity is normalized to [0,1], where 0.5 ~ "reference equity".
+  TERM low    := (0.00, 1.00) (0.45, 0.00);
+  TERM high   := (0.55, 0.00) (1.00, 1.00);
+END_FUZZIFY
+
 DEFUZZIFY risk_per_trade
-  TERM low    := (0.00, 1.00) (0.40, 0.00);
-  TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
-  TERM high   := (0.60, 0.00) (1.00, 1.00);
+  TERM low    := (0.00, 1.00) (0.35, 0.00);
+  TERM medium := (0.15, 0.00) (0.55, 1.00) (0.85, 0.00);
+  TERM high   := (0.45, 0.00) (1.00, 1.00);
 
   METHOD  : COG;
   DEFAULT : 0.00;
@@ -65,6 +72,14 @@ RULEBLOCK risk_rules
            THEN risk_per_trade IS low;
 
   RULE 4 : IF signal_confidence IS low
+           THEN risk_per_trade IS low;
+
+  // Equity boost (only if setup isn't "bad")
+  RULE 5 : IF equity IS high AND signal_confidence IS high AND volatility IS medium
+           THEN risk_per_trade IS high;
+  RULE 6 : IF equity IS high AND signal_confidence IS medium AND volatility IS low AND open_trades IS few
+           THEN risk_per_trade IS high;
+  RULE 7 : IF equity IS low
            THEN risk_per_trade IS low;
 END_RULEBLOCK
 

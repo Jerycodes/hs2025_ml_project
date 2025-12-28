@@ -1861,8 +1861,10 @@ def _add_trade_simulation_pages_variant(
                     extra_args=(),
                     mode=os.environ.get("FLEX_MODE", "auto"),
                 )
-                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
-                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
+                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.60"))
+                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.20"))
+                flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.15"))
+                flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
                 resolved = shutil.which(flex_cfg.flex_cmd)
                 if resolved:
                     try:
@@ -1886,12 +1888,16 @@ def _add_trade_simulation_pages_variant(
             except Exception as e:
                 flex_ok = False
                 flex_note = f"FLEX init fehlgeschlagen: {type(e).__name__}: {str(e).splitlines()[0]}"
-                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
-                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
+                flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.60"))
+                flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.20"))
+                flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.15"))
+                flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
         else:
             flex_note = "FLEX deaktiviert: Predictions enthalten nicht 'signal_prob' und 'direction_prob_up'."
-            flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.25"))
-            flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.10"))
+            flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.60"))
+            flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.20"))
+            flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.15"))
+            flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
 
         # Volatilität aus Close-Returns (rolling std) und robust auf [0,1] normieren.
         dates_idx = pd.DatetimeIndex(df["date"].tolist())
@@ -1973,11 +1979,15 @@ def _add_trade_simulation_pages_variant(
                     sig_conf = float(max(0.0, min(1.0, p_sig * dir_conf)))
                     v = float(vol_norm[i]) if len(vol_norm) > i else 0.5
                     try:
+                        equity_ratio = float(cap_c / start_capital) if start_capital > 0 else 1.0
+                        span = float(flex_equity_span_ratio) if float(flex_equity_span_ratio) > 0 else 0.5
+                        equity_norm = float(np.clip(0.5 + 0.5 * ((equity_ratio - 1.0) / span), 0.0, 1.0))
                         risk = float(
                             evaluate_risk(
                                 signal_confidence=sig_conf,
                                 volatility=v,
                                 open_trades=open_tr_c,
+                                equity=equity_norm,
                                 cfg=flex_cfg,  # type: ignore[arg-type]
                             )
                         )
@@ -1985,6 +1995,7 @@ def _add_trade_simulation_pages_variant(
                         # Calibrate risk upward/downward (for stake sizing). Defaults are set to
                         # increase the average stake a bit; tune via env vars if desired.
                         risk = float(max(0.0, min(1.0, risk_raw * float(flex_risk_mult) + float(flex_risk_bias))))
+                        risk = float(max(float(flex_risk_floor), risk))
 
                         stake_c = cap_c * frac * risk
                         stake_c_lev20 = cap_c_lev20 * frac * risk
@@ -2012,6 +2023,9 @@ def _add_trade_simulation_pages_variant(
                                 "risk_raw": float(risk_raw),
                                 "risk_mult": float(flex_risk_mult),
                                 "risk_bias": float(flex_risk_bias),
+                                "risk_floor": float(flex_risk_floor),
+                                "equity_norm": float(equity_norm),
+                                "equity_ratio": float(equity_ratio),
                                 "signal_confidence": float(sig_conf),
                                 "volatility": float(v),
                                 "open_trades": float(open_tr_c),
@@ -2061,6 +2075,8 @@ def _add_trade_simulation_pages_variant(
             df.attrs["flex_note"] = note
         df.attrs["flex_risk_mult"] = float(flex_risk_mult)
         df.attrs["flex_risk_bias"] = float(flex_risk_bias)
+        df.attrs["flex_risk_floor"] = float(flex_risk_floor)
+        df.attrs["flex_equity_span_ratio"] = float(flex_equity_span_ratio)
     else:
         for r, stake in zip(df["trade_return"], df["stake_fixed"]):
             capital_before.append(capital)
@@ -2162,7 +2178,12 @@ def _add_trade_simulation_pages_variant(
             ["C (FLEX, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_c_lev20:.2f}"],
             ["C (FLEX, Hebel 20)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake_c_lev20:.2f}"],
             ["C (FLEX)", "FLEX_CMD", os.environ.get("FLEX_CMD", "flex")],
-            ["C (FLEX)", "Risk-Kalibrierung", f"risk = clip(risk_raw*{df.attrs.get('flex_risk_mult', 1.0):.2f} + {df.attrs.get('flex_risk_bias', 0.0):.2f})"],
+            [
+                "C (FLEX)",
+                "Risk-Kalibrierung",
+                f"risk=max({df.attrs.get('flex_risk_floor', 0.0):.2f}, clip(risk_raw*{df.attrs.get('flex_risk_mult', 1.0):.2f}+{df.attrs.get('flex_risk_bias', 0.0):.2f}))",
+            ],
+            ["C (FLEX)", "Equity-Norm", f"equity_norm=clip(0.5+0.5*((equity_ratio-1)/{df.attrs.get('flex_equity_span_ratio', 0.5):.2f}),0..1)"],
         ]
         flex_note = str(df.attrs.get("flex_note") or "")
 

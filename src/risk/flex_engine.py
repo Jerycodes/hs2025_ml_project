@@ -82,7 +82,7 @@ def _looks_like_lex_flex(cmd: str) -> bool:
     return bool(re.search(r"\bflex\s+2\.", out, flags=re.IGNORECASE))
 
 
-def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades: float) -> float:
+def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades: float, equity: float) -> float:
     """
     Minimal Mamdani-style fuzzy inference (hard-coded membership functions + rules).
     This is a fallback if no compatible FLEX CLI is configured.
@@ -118,10 +118,12 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
     sc = clamp(signal_confidence, 0.0, 1.0)
     vol = clamp(volatility, 0.0, 1.0)
     ot = clamp(open_trades, 0.0, 5.0)
+    eq = clamp(equity, 0.0, 1.0)
 
-    sc_low = left_shoulder(sc, 0.0, 0.4)
-    sc_med = triangle(sc, 0.2, 0.5, 0.8)
-    sc_high = right_shoulder(sc, 0.6, 1.0)
+    # Slightly more aggressive than the original spec (higher average risk).
+    sc_low = left_shoulder(sc, 0.0, 0.35)
+    sc_med = triangle(sc, 0.15, 0.5, 0.85)
+    sc_high = right_shoulder(sc, 0.5, 1.0)
 
     vol_low = left_shoulder(vol, 0.0, 0.4)
     vol_med = triangle(vol, 0.2, 0.5, 0.8)
@@ -131,24 +133,36 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
     ot_med = triangle(ot, 1.0, 2.5, 4.0)
     ot_many = right_shoulder(ot, 3.0, 5.0)
 
+    eq_low = left_shoulder(eq, 0.0, 0.45)
+    eq_high = right_shoulder(eq, 0.55, 1.0)
+
     # Rules (Mamdani: AND=min, OR=max, implication=min, aggregation=max)
+    # Base rules:
     r1_high = min(sc_high, vol_low, ot_few)  # -> risk high
     r2_med = min(sc_med, vol_med)            # -> risk medium
     r3_low = max(vol_high, ot_many)          # -> risk low
     r4_low = max(r3_low, sc_low)             # -> risk low
 
-    deg_low = clamp(max(r4_low, 0.0), 0.0, 1.0)
+    # Equity rules:
+    # - more capital => allow slightly higher risk, only if setup isn't "bad"
+    # - less capital => be more conservative
+    r5_high = min(eq_high, sc_high, vol_med)                 # -> risk high
+    r6_high = min(eq_high, sc_med, vol_low, ot_few)          # -> risk high
+    r7_low = eq_low                                          # -> risk low
+
+    deg_low = clamp(max(r4_low, r7_low, 0.0), 0.0, 1.0)
     deg_med = clamp(max(r2_med, 0.0), 0.0, 1.0)
-    deg_high = clamp(max(r1_high, 0.0), 0.0, 1.0)
+    deg_high = clamp(max(r1_high, r5_high, r6_high, 0.0), 0.0, 1.0)
 
     # Defuzzify (centroid) on output universe [0,1]
     num = 0.0
     den = 0.0
     for i in range(0, 1001):
         x = i / 1000.0
-        mu_low = min(deg_low, left_shoulder(x, 0.0, 0.4))
-        mu_med = min(deg_med, triangle(x, 0.2, 0.5, 0.8))
-        mu_high = min(deg_high, right_shoulder(x, 0.6, 1.0))
+        # Output sets: slightly shifted upward to produce higher average stakes.
+        mu_low = min(deg_low, left_shoulder(x, 0.0, 0.35))
+        mu_med = min(deg_med, triangle(x, 0.15, 0.55, 0.85))
+        mu_high = min(deg_high, right_shoulder(x, 0.45, 1.0))
         mu = max(mu_low, mu_med, mu_high)
         num += x * mu
         den += mu
@@ -202,6 +216,7 @@ def evaluate_risk(
     signal_confidence: float,
     volatility: float,
     open_trades: float,
+    equity: float | None = None,
     *,
     cfg: FlexConfig = FlexConfig(),
 ) -> float:
@@ -210,22 +225,26 @@ def evaluate_risk(
     Raises FlexEngineError on CLI or parsing failures.
     """
     _validate_inputs(signal_confidence, volatility, open_trades)
+    eq = 0.5 if equity is None else float(equity)
+    if not (0.0 <= eq <= 1.0):
+        raise ValueError("equity must be in [0, 1]")
 
     if not cfg.rule_path.exists():
         raise FlexEngineError(f"Rule file not found: {cfg.rule_path}")
 
     if cfg.mode == "python":
-        return _python_fuzzy_risk(signal_confidence, volatility, open_trades)
+        return _python_fuzzy_risk(signal_confidence, volatility, open_trades, eq)
 
     payload = {
         "signal_confidence": float(signal_confidence),
         "volatility": float(volatility),
         "open_trades": float(open_trades),
+        "equity": float(eq),
     }
 
     if _looks_like_lex_flex(cfg.flex_cmd):
         if cfg.mode == "auto":
-            return _python_fuzzy_risk(signal_confidence, volatility, open_trades)
+            return _python_fuzzy_risk(signal_confidence, volatility, open_trades, eq)
         raise FlexEngineError(
             "FLEX_CMD seems to point to the *lexical analyzer generator* (flex 2.x), not a fuzzy engine.\n"
             "Fix: set FLEX_CMD to your fuzzy FLEX binary (or use cfg.mode='python' for the built-in fallback).\n"
@@ -275,6 +294,6 @@ def evaluate_risk(
                 raise
 
     if cfg.mode == "auto":
-        return _python_fuzzy_risk(signal_confidence, volatility, open_trades)
+        return _python_fuzzy_risk(signal_confidence, volatility, open_trades, eq)
 
     raise FlexEngineError(f"All FLEX modes failed. Last error: {last_err}") from last_err
