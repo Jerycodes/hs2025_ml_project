@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.risk.flex_engine import FlexConfig, evaluate_risk
 
 
@@ -8,7 +10,7 @@ def main() -> None:
     # If your FLEX binary needs extra flags (e.g. "--json"), put them here.
     cfg = FlexConfig(
         flex_cmd="flex",
-        rule_path="rules/risk.flex",  # type: ignore[arg-type]
+        rule_path=Path("rules/risk.flex"),
         extra_args=(),
         mode="auto",
     )
@@ -29,4 +31,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
