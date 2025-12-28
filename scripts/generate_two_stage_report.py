@@ -2837,11 +2837,230 @@ def add_trade_simulation_pages(
         preds_use,
         fx_df,
         exp_config,
-        trade_return_fn=_compute_trade_return,
+        # Für einen fairen Vergleich mit Variante 3 verwenden wir dieselbe Return-Regel (TP-only)
+        # und Settlement am Exit-Datum – nur die Positionsgröße (Strategie B) wird via FLEX skaliert.
+        trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
         variant_name="Variante 4",
         model_prefix=model_prefix,
+        settle_at_exit=True,
+        outcome_variant="tp_only",
         strategy_b_mode="flex",
     )
+
+    # Vergleich: Variante 3 (Strategie B fix 10%) vs Variante 4 (Strategie B via FLEX)
+    def _simulate_strategy_b_series(
+        *,
+        preds_df: pd.DataFrame,
+        fx_df: pd.DataFrame,
+        label_params: dict[str, Any],
+        trade_return_fn,
+        settle_at_exit: bool,
+        outcome_variant: str | None,
+        use_flex: bool,
+        start_capital: float = 1000.0,
+        frac: float = 0.10,
+    ) -> tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
+        """
+        Returns: (dates, capital_after, stake_entry_per_day)
+        stake_entry_per_day is 0 on non-trade days, else stake used at entry.
+        """
+        df = preds_df.copy().sort_values("date")
+        df["date"] = pd.to_datetime(df["date"])
+        df["label_true"] = df["label_true"].astype(str)
+        df["combined_pred"] = df["combined_pred"].astype(str)
+        dates = pd.DatetimeIndex(df["date"].tolist())
+        if len(dates) == 0:
+            return dates, np.array([]), np.array([])
+
+        if settle_at_exit:
+            if outcome_variant is None:
+                raise ValueError("outcome_variant muss gesetzt sein, wenn settle_at_exit=True.")
+            outcomes = [
+                _compute_trade_outcome(dt, pred, true, fx_df, label_params, variant=outcome_variant)
+                for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+            ]
+            df["trade_return"] = [r for r, _ in outcomes]
+            exit_raw = [ex for _, ex in outcomes]
+
+            def book_date(exit_dt: pd.Timestamp) -> pd.Timestamp | pd.NaT:
+                if len(dates) == 0:
+                    return pd.NaT
+                i = dates.searchsorted(pd.Timestamp(exit_dt))
+                if i >= len(dates):
+                    return dates[-1]
+                return dates[i]
+
+            df["exit_booked"] = [
+                book_date(ex) if pred in {"up", "down"} else pd.NaT
+                for pred, ex in zip(df["combined_pred"], exit_raw)
+            ]
+        else:
+            df["trade_return"] = [
+                trade_return_fn(dt, pred, true, fx_df, label_params)
+                for dt, pred, true in zip(df["date"], df["combined_pred"], df["label_true"])
+            ]
+            df["exit_booked"] = pd.NaT
+
+        trades_mask = df["combined_pred"].isin(["up", "down"]).to_numpy()
+        r_arr = df["trade_return"].astype(float).to_numpy()
+        cap = float(start_capital)
+        cap_after = np.zeros(len(df), dtype=float)
+        stake_entry = np.zeros(len(df), dtype=float)
+
+        # volatility from Close returns (rolling std), normalized to [0,1]
+        fx_close = pd.Series(fx_df["Close"]).copy()
+        fx_close.index = pd.to_datetime(fx_close.index)
+        vol_raw = fx_close.pct_change().rolling(14).std()
+        vol_on_dates = vol_raw.reindex(dates).astype(float)
+        q05 = float(vol_on_dates.quantile(0.05))
+        q95 = float(vol_on_dates.quantile(0.95))
+        denom = (q95 - q05) if (q95 > q05) else 1.0
+        vol_norm = ((vol_on_dates - q05) / denom).clip(0.0, 1.0).fillna(0.5).to_numpy()
+
+        # FLEX setup
+        flex_cfg = None
+        if use_flex:
+            from src.risk.flex_engine import FlexConfig, evaluate_risk
+
+            flex_cfg = FlexConfig(
+                flex_cmd=os.environ.get("FLEX_CMD", "flex"),
+                rule_path=Path("rules/risk.flex"),
+                extra_args=(),
+                mode=os.environ.get("FLEX_MODE", "auto"),
+            )
+
+        pending: dict[pd.Timestamp, float] = {}
+        open_exits: list[pd.Timestamp] = []
+        for i, dt in enumerate(dates):
+            # realize pnl booked today (settle-at-exit)
+            if settle_at_exit:
+                cap += float(pending.pop(pd.Timestamp(dt), 0.0))
+                open_exits = [ex for ex in open_exits if pd.Timestamp(ex) > pd.Timestamp(dt)]
+
+            if not bool(trades_mask[i]):
+                cap_after[i] = cap
+                continue
+
+            # stake at entry
+            if not use_flex:
+                stake = cap * float(frac)
+            else:
+                # require prob columns
+                if "signal_prob" not in df.columns or "direction_prob_up" not in df.columns:
+                    raise RuntimeError("Predictions-CSV fehlt signal_prob oder direction_prob_up.")
+                pred = str(df.at[i, "combined_pred"])
+                p_sig = float(df.at[i, "signal_prob"])
+                p_up = float(df.at[i, "direction_prob_up"])
+                dir_conf = p_up if pred == "up" else (1.0 - p_up)
+                sig_conf = float(max(0.0, min(1.0, p_sig * dir_conf)))
+                open_tr = float(min(len(open_exits), 5))
+                risk = float(
+                    evaluate_risk(
+                        signal_confidence=sig_conf,
+                        volatility=float(vol_norm[i]),
+                        open_trades=open_tr,
+                        cfg=flex_cfg,  # type: ignore[arg-type]
+                    )
+                )
+                risk = float(max(0.0, min(1.0, risk)))
+                stake = cap * float(frac) * risk
+
+            stake_entry[i] = float(stake)
+
+            if settle_at_exit:
+                exit_booked = df.at[i, "exit_booked"]
+                if pd.notna(exit_booked):
+                    ex = pd.Timestamp(exit_booked)
+                    pending[ex] = pending.get(ex, 0.0) + float(stake) * float(r_arr[i])
+                    open_exits.append(ex)
+            else:
+                cap = cap * (1.0 + float(frac) * float(r_arr[i])) if stake > 0 else cap
+
+            cap_after[i] = cap
+
+        return dates, cap_after, stake_entry
+
+    try:
+        lp = exp_config.get("label_params", {}) or {}
+        preds_cmp = preds_use  # already has combined_pred
+
+        dates3, cap3, stake3 = _simulate_strategy_b_series(
+            preds_df=preds_cmp,
+            fx_df=fx_df,
+            label_params=lp,
+            trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
+            settle_at_exit=True,
+            outcome_variant="tp_only",
+            use_flex=False,
+        )
+        dates4, cap4, stake4 = _simulate_strategy_b_series(
+            preds_df=preds_cmp,
+            fx_df=fx_df,
+            label_params=lp,
+            trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
+            settle_at_exit=True,
+            outcome_variant="tp_only",
+            use_flex=True,
+        )
+
+        if len(dates3) and len(dates4) and len(cap3) == len(cap4):
+            delta = cap4 - cap3
+
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=(11.69, 6.5), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
+            )
+            ax1.plot(dates3, cap3, label="Variante 3 – Strategie B (fix 10%)", linewidth=2)
+            ax1.plot(dates4, cap4, label="Variante 4 – Strategie B (FLEX)", linewidth=2)
+            ax1.axhline(1000.0, color="black", linewidth=1, alpha=0.4)
+            ax1.set_title(
+                f"{model_prefix}Vergleich Strategie B: Variante 3 vs Variante 4 (FLEX) – Kapitalverlauf",
+                fontsize=13,
+                weight="bold",
+            )
+            ax1.set_ylabel("Kapital (CHF)")
+            ax1.legend()
+
+            ax2.bar(dates3, delta, width=3.0, color=np.where(delta >= 0, "#2ca02c", "#d62728"), alpha=0.8)
+            ax2.axhline(0.0, color="black", linewidth=1)
+            ax2.set_ylabel("Δ CHF")
+            ax2.set_xlabel("Datum")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # Stake-per-trade plot
+            mask_trades = (stake3 > 0) | (stake4 > 0)
+            fig, ax = plt.subplots(figsize=(11.69, 4.5))
+            ax.scatter(dates3[stake3 > 0], stake3[stake3 > 0], s=18, alpha=0.85, label="Variante 3 – stake (fix 10%)")
+            ax.scatter(dates4[stake4 > 0], stake4[stake4 > 0], s=18, alpha=0.85, label="Variante 4 – stake (FLEX)")
+            ax.set_title(
+                f"{model_prefix}Strategie B – Einsatz pro Trade (Variante 3 vs Variante 4)",
+                fontsize=13,
+                weight="bold",
+            )
+            ax.set_xlabel("Datum")
+            ax.set_ylabel("Einsatz (CHF)")
+            ax.legend()
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+    except Exception as e:
+        # Wenn FLEX-CLI fehlt oder Parsing fehlschlägt, soll der Report nicht crashen.
+        fig = plt.figure(figsize=(11.69, 3.5))
+        fig.patch.set_facecolor("white")
+        ax = fig.add_subplot(111)
+        ax.axis("off")
+        fig.text(0.06, 0.78, f"{model_prefix}Vergleich Strategie B: Variante 3 vs Variante 4 (FLEX)", fontsize=14, weight="bold")
+        fig.text(
+            0.06,
+            0.62,
+            "Hinweis: Vergleichsgrafik konnte nicht erzeugt werden (FLEX/Parsing/Inputs nicht verfügbar).",
+            fontsize=11,
+        )
+        fig.text(0.06, 0.50, f"Fehler: {e}", fontsize=9, alpha=0.85)
+        fig.text(0.06, 0.18, "Tipp: setze FLEX_CMD/FLEX_MODE oder installiere die FLEX CLI.", fontsize=10)
+        pdf.savefig(fig)
+        plt.close(fig)
 
 
 def add_distributions_page(pdf: PdfPages, df: pd.DataFrame) -> None:
