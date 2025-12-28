@@ -2406,3 +2406,398 @@ src/models/train_two_stage_v2.py
 - Keine Netzwerkcalls ausgeführt.
 - Keine Git-Commits erstellt.
 - Keine “Kapitalbindung/Positions-Lock”-Logik umgesetzt (Trades können weiterhin überlappen; nur Settlement-Zeitpunkt wurde verändert).
+
+### 2025-12-21 10:53  — Journal-Eintrag erstellt, kurz rückgängig, dann wiederhergestellt
+
+**Ziel**
+- `CHAT_JOURNAL.md` gemäß Template um einen Eintrag ergänzen (Fakten aus dem Chat).
+- Nach User-Wunsch: Änderung kurz rückgängig machen und anschließend doch wieder hinzufügen.
+
+**Kontext**
+- Working dir: `/Users/jeremynathan/Documents/GitHub/hs2025_ml_project/hs2025_ml_project`
+- Branch/Status: Auszug von `git status -sb`
+  ```text
+  ## main...origin/main
+ M notebooks/final_two_stage/1_data_prep_final.ipynb
+ M notebooks/final_two_stage/2_train_final.ipynb
+ M notebooks/final_two_stage/3_eval_final.ipynb
+ M scripts/compare_experiments_pnl.py
+?? .tmp/
+?? docs/bericht_projektanalyse_hs2025_ml_project.txt
+?? docs/v2_pipeline.md
+?? notebooks/results/final_two_stage/_debug_hp_long_result_report.pdf
+?? notebooks/results/final_two_stage/_debug_hp_long_result_report_v2.pdf
+?? notebooks/results/final_two_stage/_debug_hp_long_result_report_with_v3.pdf
+?? notebooks/results/final_two_stage/_debug_hp_long_result_report_with_v3_full.pdf
+?? notebooks/results/final_two_stage/pdf/
+?? notebooks/results/final_two_stage/two_stage_final__final_yahoo.json
+?? notebooks/results/final_two_stage/two_stage_final__final_yahoo_metrics.csv
+?? notebooks/results/final_two_stage/two_stage_final__final_yahoo_predictions.csv
+?? notebooks/results/final_two_stage/two_stage_final__final_yahoo_report.pdf
+?? notebooks/results/final_two_stage/two_stage_final__hp_eod_result.json
+?? notebooks/results/final_two_stage/two_stage_final__hp_eod_result_metrics.csv
+?? notebooks/results/final_two_stage/two_stage_final__hp_eod_result_predictions.csv
+?? notebooks/results/final_two_stage/two_stage_final__hp_eod_result_report.pdf
+?? notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1.json
+?? notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_metrics.csv
+?? notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_predictions.csv
+?? notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_report.pdf
+... (gekürzt)
+  ```
+- Hinweis: In Shell-Outputs tauchte auf: `/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted`.
+
+**Git (optional, aber wenn vorhanden ausfüllen)**
+- Letzte Commits: `git log --oneline --decorate -n 10`
+  ```text
+  e78fb5e (HEAD -> main, origin/main, origin/HEAD) chore: update notebooks/results and report tools
+a83dea3 feat(labeling): first-hit + weekday filter; report variants
+46c107f feat(report): expand docs and add P&L comparison script
+265f8af Update latest eurusd_labels snapshot
+46f1cea Add EODHD FX pipeline and comparison tools
+88e5fd0 Add hp_long result metrics and reports
+f77ea1b hp_long price-only baseline + cleanup
+b851d53 Add hp_long runs and cost-based signal threshold; keep news pipeline intact
+7f2c260 Add hp1 price-only baseline and compare with hv5
+ee1ebdf Run hv5_h4_thr0p4pct_hit_6 notebooks
+  ```
+- Relevante Commits dieser Session (Hashes + Message): keine erstellt.
+
+**Vorgehen (was gemacht wurde)**
+- Git-Infos und Status gesammelt (`git status -sb`, `git log ...`).
+- `CHAT_JOURNAL.md` zunächst um einen Eintrag ergänzt.
+- Auf Wunsch „rückgängig“: Eintrag wieder entfernt.
+- Wieder auf Wunsch: Journal wiederhergestellt (Workaround, da `git restore` nicht funktionierte).
+
+**Kommandos/Outputs (wichtigste)**
+- `git status -sb`
+- `git log --oneline --decorate -n 10`
+- Entfernen des Eintrags: per Python-Script (Trunkierung ab Marker; Details im Chat).
+- Versuchtes Restore (fehlgeschlagen):
+  - `git restore --worktree CHAT_JOURNAL.md`
+  - Fehler: `fatal: Unable to create '<repo>/.git/index.lock': Operation not permitted`
+- Restore-Workaround (erfolgreich):
+  - `git show HEAD:CHAT_JOURNAL.md > CHAT_JOURNAL.md`
+
+**Änderungen**
+- Geändert (tracked; aktueller Stand aus `git diff --name-status`):
+  - `notebooks/final_two_stage/1_data_prep_final.ipynb`
+  - `notebooks/final_two_stage/2_train_final.ipynb`
+  - `notebooks/final_two_stage/3_eval_final.ipynb`
+  - `scripts/compare_experiments_pnl.py`
+- Gelöscht (tracked; aktueller Stand aus `git diff --name-status`):
+  - (keine)
+- Andere Status (tracked; aktueller Stand aus `git diff --name-status`):
+  - (keine)
+- Neu (untracked; aktueller Stand aus `git ls-files --others --exclude-standard`):
+  ```text
+  .tmp/mpl/fontlist-v390.json
+docs/bericht_projektanalyse_hs2025_ml_project.txt
+docs/v2_pipeline.md
+notebooks/results/final_two_stage/_debug_hp_long_result_report.pdf
+notebooks/results/final_two_stage/_debug_hp_long_result_report_v2.pdf
+notebooks/results/final_two_stage/_debug_hp_long_result_report_with_v3.pdf
+notebooks/results/final_two_stage/_debug_hp_long_result_report_with_v3_full.pdf
+notebooks/results/final_two_stage/pdf/compare__hp_long_result__vs__hp_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare__hp_long_result__vs__hv_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare__hp_result__vs__hp_long_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare__hp_result__vs__hv_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_2_vs_hp_long_final_yahoo_3__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_2_vs_hp_long_final_yahoo_3__B_pnl_lev20.png
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_2_vs_hp_long_final_yahoo_4__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_2_vs_hp_long_final_yahoo_4__B_pnl_lev20.png
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_3_vs_hp_long_final_yahoo_4__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_3_vs_hp_long_final_yahoo_4__B_pnl_lev20.png
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_vs_hp_eod_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_vs_hp_long_eod_1__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_vs_hp_long_eod_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_vs_hp_long_final_yahoo_2__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_final_yahoo_vs_hv_eod_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_result_vs_hp_long_eod_result__B_pnl_lev20_tp_only_exit.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_result_vs_hp_long_eod_result__B_pnl_lev20_tp_only_exit_FIXEDthr_sig0p45_dir0p3_0p5.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_long_vs_hv_long__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_result_vs_hv_result__B_pnl_lev20.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_result_vs_hv_result__B_pnl_lev20__sl_tp.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_result_vs_hv_result__B_pnl_lev20__tp_only.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_result_vs_hv_result__B_pnl_lev20__tp_only_exit.pdf
+notebooks/results/final_two_stage/pdf/compare_hp_result_vs_hv_result__B_pnl_lev20__tp_only_exit_v3.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v2.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v3.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v4.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v5.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v6.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v7.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__final_yahoo_report_v8.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp1_h4_thr0p4pct_hit_1_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hpL1_h4_thr0p4pct_hit_1_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long1_h4_thr0p4pct_hit_1_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_final_yahoo_9_report_v2.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hp_long_h4_thr0p4pct_hit_1_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv1_h4_thr0p3pct_hit_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv2_h4_thr0p4pct_hit_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv3_h4_thr0p5pct_hit_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv4_h4_thr0p4pct_hit_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_2_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_3_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_4_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_5_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_6_2_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_6_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__hv5_h4_thr0p4pct_hit_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__v0_h4_thr1pct_strict_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__v1_h4_thr0p5pct_strict_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__v3_h4_thr0p3pct_relaxed_report.pdf
+notebooks/results/final_two_stage/pdf/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+notebooks/results/final_two_stage/two_stage_final__final_yahoo.json
+notebooks/results/final_two_stage/two_stage_final__final_yahoo_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__final_yahoo_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__final_yahoo_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_eod_result.json
+notebooks/results/final_two_stage/two_stage_final__hp_eod_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_eod_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_eod_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_1_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_12.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_12_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_12_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_12_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_13.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_13_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_13_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_final_yahoo_13_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_result.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_eod_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_10.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_10_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_10_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_10_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_11.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_11_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_11_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_11_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_12.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_12_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_12_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_12_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_2.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_2_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_2_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_2_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_3.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_3_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_3_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_3_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_4.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_4_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_4_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_4_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_5.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_5_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_5_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_5_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_6.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_6_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_6_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_6_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_7.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_7_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_7_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_7_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_8.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_8_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_8_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_8_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_9.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_9_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_9_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_9_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_result.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_1.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_1_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_1_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_1_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_2.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_2_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_2_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_2_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_3.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_3_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_3_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_3_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_4.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_4_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_4_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_4_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_5.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_5_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_5_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_5_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_6.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_6_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_6_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_6_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_7.json
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_7_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_7_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_long_yahoo_7_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_result.json
+notebooks/results/final_two_stage/two_stage_final__hp_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hp_yahoo_1.json
+notebooks/results/final_two_stage/two_stage_final__hp_yahoo_1_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hp_yahoo_1_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hp_yahoo_1_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hv_eod_result.json
+notebooks/results/final_two_stage/two_stage_final__hv_eod_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hv_eod_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hv_eod_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo.json
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_2.json
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_2_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_2_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_2_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hv_long_final_yahoo_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hv_result.json
+notebooks/results/final_two_stage/two_stage_final__hv_result_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hv_result_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hv_result_report.pdf
+notebooks/results/final_two_stage/two_stage_final__hv_yahoo_2.json
+notebooks/results/final_two_stage/two_stage_final__hv_yahoo_2_metrics.csv
+notebooks/results/final_two_stage/two_stage_final__hv_yahoo_2_predictions.csv
+notebooks/results/final_two_stage/two_stage_final__hv_yahoo_2_report.pdf
+notebooks/results/pdf/two_stage__v1_h4_thr0p5pct_strict_report.pdf
+notebooks/results/pdf/two_stage__v2_h4_thr0p5pct_strict_newfeat_report.pdf
+notebooks/results/pdf/two_stage__v3_h4_thr0p3pct_relaxed_report.pdf
+notebooks/results/pdf/two_stage__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+notebooks/results/pdf/two_stage__v5_h4_thr0p5pct_tolerant0p3pct_spw1p0_report.pdf
+notebooks/results/pdf/two_stage__v6_h4_thr0p5pct_tolerant0p3pct_sigdepth2_report.pdf
+notebooks/results/pdf/two_stage__v7_h4_thr0p5pct_tolerant0p3pct_sigdepth4_n600_report.pdf
+notebooks/results/pdf/two_stage__v8_h4_thr0p5pct_tolerant0p3pct_sig_easytrain_report.pdf
+notebooks/results/pdf/two_stage__v9_h4_thr0p5pct_tol0p3_30dfeat_report.pdf
+notebooks/results/pdf/updown__s1_h4_thr0p5pct_tol0p3_report.pdf
+notebooks/results/pdf/updown__s2_h4_thr0p5pct_tol0p3_report.pdf
+notebooks/results/two_stage__final_yahoo.json
+notebooks/results/two_stage__hp_eod_result.json
+notebooks/results/two_stage__hp_long_eod_1.json
+notebooks/results/two_stage__hp_long_eod_final_yahoo_12.json
+notebooks/results/two_stage__hp_long_eod_final_yahoo_13.json
+notebooks/results/two_stage__hp_long_eod_result.json
+notebooks/results/two_stage__hp_long_final_yahoo.json
+notebooks/results/two_stage__hp_long_final_yahoo_10.json
+notebooks/results/two_stage__hp_long_final_yahoo_11.json
+notebooks/results/two_stage__hp_long_final_yahoo_12.json
+notebooks/results/two_stage__hp_long_final_yahoo_2.json
+notebooks/results/two_stage__hp_long_final_yahoo_3.json
+notebooks/results/two_stage__hp_long_final_yahoo_4.json
+notebooks/results/two_stage__hp_long_final_yahoo_5.json
+notebooks/results/two_stage__hp_long_final_yahoo_6.json
+notebooks/results/two_stage__hp_long_final_yahoo_7.json
+notebooks/results/two_stage__hp_long_final_yahoo_8.json
+notebooks/results/two_stage__hp_long_final_yahoo_9.json
+notebooks/results/two_stage__hp_long_result.json
+notebooks/results/two_stage__hp_long_yahoo_1.json
+notebooks/results/two_stage__hp_long_yahoo_2.json
+notebooks/results/two_stage__hp_long_yahoo_3.json
+notebooks/results/two_stage__hp_long_yahoo_4.json
+notebooks/results/two_stage__hp_long_yahoo_5.json
+notebooks/results/two_stage__hp_long_yahoo_6.json
+notebooks/results/two_stage__hp_long_yahoo_7.json
+notebooks/results/two_stage__hp_result.json
+notebooks/results/two_stage__hp_yahoo_1.json
+notebooks/results/two_stage__hv_eod_result.json
+notebooks/results/two_stage__hv_long_final_yahoo.json
+notebooks/results/two_stage__hv_long_final_yahoo_2.json
+notebooks/results/two_stage__hv_result.json
+notebooks/results/two_stage__hv_yahoo_2.json
+notebooks/v2_two_stage/0_calibrate_params_v2.ipynb
+notebooks/v2_two_stage/1_run_experiments_v2.ipynb
+notebooks/v2_two_stage/2_summarize_results_v2.ipynb
+powerpoint/presentation.pptx
+powerpoint/presentation_image_1.2
+powerpoint/presentation_image_1.2.png
+powerpoint/presentation_image_1.3.png
+powerpoint/presentation_image_1.png
+powerpoint/~$presentation.pptx
+scripts/calibrate_trade_params_v2.py
+scripts/compare_v2_experiments.py
+scripts/compare_yahoo_vs_eod_experiments.py
+scripts/run_two_stage_experiment_v2.py
+scripts/summarize_v2_results.py
+src/data/build_training_set_v2.py
+src/data/label_eurusd_trade.py
+src/experiments/__init__.py
+src/experiments/v2_config.py
+src/models/train_two_stage_v2.py
+  ```
+- Rückgängig gemacht:
+  - Journal-Eintrag entfernt (Python-Trunkierung) und anschließend `CHAT_JOURNAL.md` aus `HEAD` wiederhergestellt via `git show HEAD:CHAT_JOURNAL.md > CHAT_JOURNAL.md`.
+
+**Ergebnis**
+- `CHAT_JOURNAL.md` enthält wieder einen neuen Eintrag am Ende (dieser Eintrag).
+
+**Offen / Nicht gemacht (bewusst)**
+- Keine Packages installiert.
+- Keine Tests/Linter/Formatter ausgeführt.
+- Keine Netzwerkcalls ausgeführt.
+- Keine Git-Commits erstellt.

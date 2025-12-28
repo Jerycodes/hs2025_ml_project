@@ -72,6 +72,16 @@ FEATURE_COLS = [
     "hol_is_us_federal_holiday",
     "hol_is_day_before_us_federal_holiday",
     "hol_is_day_after_us_federal_holiday",
+    # Intraday (MT5 H1 -> Daily) derived features (optional; used if present in CSV)
+    "h1_ret_std",
+    "h1_ret_sum_abs",
+    "h1_range_pct_mean",
+    "h1_range_pct_max",
+    "h1_close_open_pct",
+    "h1_up_hours_frac",
+    "h1_down_hours_frac",
+    "h1_tick_volume_sum",
+    "h1_spread_mean",
 ]
 
 
@@ -114,6 +124,7 @@ def train_xgb_binary(
     X_val: pd.DataFrame,
     y_val: np.ndarray,
     scale_pos_weight: float | None = None,
+    xgb_params: dict | None = None,
 ) -> xgb.XGBClassifier:
     """Trainiert ein binäres XGBoost-Modell mit einfachen Defaults.
 
@@ -148,8 +159,15 @@ def train_xgb_binary(
         n_pos = (y_train == 1).sum()
         n_neg = (y_train == 0).sum()
         scale_pos_weight = n_neg / max(n_pos, 1)
+    # Guardrail: scale_pos_weight sollte >0 sein. Werte <1 sind valide (wenn die positive Klasse
+    # häufiger ist), aber extrem kleine/hohe Werte können zu instabilen oder degenerierten Lösungen
+    # führen. Deshalb sanft clampen statt hart auf >=1 zu zwingen.
+    scale_pos_weight = float(scale_pos_weight)
+    if scale_pos_weight <= 0:
+        raise ValueError(f"scale_pos_weight muss > 0 sein, ist aber {scale_pos_weight}.")
+    scale_pos_weight = min(max(scale_pos_weight, 0.2), 5.0)
 
-    model = xgb.XGBClassifier(
+    params = dict(
         objective="binary:logistic",
         eval_metric="logloss",
         max_depth=3,
@@ -157,9 +175,14 @@ def train_xgb_binary(
         n_estimators=400,
         subsample=0.9,
         colsample_bytree=0.9,
-        scale_pos_weight=scale_pos_weight,
         random_state=42,
     )
+    if isinstance(xgb_params, dict) and xgb_params:
+        params.update(xgb_params)
+    # scale_pos_weight should always match the computed/explicit value
+    params["scale_pos_weight"] = scale_pos_weight
+
+    model = xgb.XGBClassifier(**params)
 
     use_eval = X_val is not None and len(X_val) > 0 and y_val is not None and len(y_val) > 0
     if use_eval:

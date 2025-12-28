@@ -86,6 +86,16 @@ FEATURE_DESCRIPTIONS = {
     "hol_is_day_before_us_federal_holiday": "Flag: 1 wenn Tag vor US-Feiertag.",
     "hol_is_day_after_us_federal_holiday": "Flag: 1 wenn Tag nach US-Feiertag.",
     "lookahead_return": "Return über den Label-Horizont (z.B. t..t+4).",
+    # Intraday (MT5 H1 -> Daily) derived features
+    "h1_ret_std": "Standardabweichung der stündlichen Returns innerhalb eines Tages (aus H1).",
+    "h1_ret_sum_abs": "Summe der absoluten stündlichen Returns innerhalb eines Tages (aus H1).",
+    "h1_range_pct_mean": "Mittlere stündliche Kerzenspanne (High-Low)/Close innerhalb des Tages (aus H1).",
+    "h1_range_pct_max": "Maximale stündliche Kerzenspanne (High-Low)/Close innerhalb des Tages (aus H1).",
+    "h1_close_open_pct": "Tages-Return auf H1-Basis: Close(last)/Open(first) - 1 (pro Session/Cut).",
+    "h1_up_hours_frac": "Anteil Stunden im Tag mit Close > Open (aus H1).",
+    "h1_down_hours_frac": "Anteil Stunden im Tag mit Close < Open (aus H1).",
+    "h1_tick_volume_sum": "Summe Tick-Volume über alle Stunden im Tag (aus H1).",
+    "h1_spread_mean": "Durchschnittlicher Spread über die Stunden im Tag (aus H1).",
 }
 
 
@@ -207,6 +217,7 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
     """Fügt eine Titelseite mit den wichtigsten Metadaten und einer Kurzbeschreibung hinzu."""
     cfg = results.get("config", {})
     label_params = exp_config.get("label_params", {})
+    data_params = exp_config.get("data_params", {})
 
     fig = plt.figure(figsize=(8.27, 11.69))  # A4-Hochformat in Zoll
     fig.clf()
@@ -273,7 +284,27 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
             f"{label_params.get('first_hit_wins')} "
             "(nur relevant bei hit_within_horizon=True: entscheidet nach erstem Treffer)"
         )
+    if "hit_source" in label_params:
+        write(
+            "- hit_source: "
+            f"{label_params.get('hit_source')} "
+            "(close = nur Schlusskurse, hl = Daily High/Low, h1 = stündliche Bars; h1 approximiert Order innerhalb des Tages)"
+        )
+    if "intraday_tie_breaker" in label_params:
+        write(
+            "- intraday_tie_breaker: "
+            f"{label_params.get('intraday_tie_breaker')} "
+            "(wird genutzt, wenn Up+Down in derselben Kerze getroffen werden und die Reihenfolge nicht bestimmbar ist)"
+        )
     y -= line_height
+
+    if data_params:
+        write("Daten-Parameter:", bold=True)
+        # keep it short; full dump is on the config pages
+        for k, v in data_params.items():
+            write(f"- {k}: {v}", max_width=90)
+        write("(vollständige Config: siehe 'Config Dump' Seiten)", max_width=90)
+        y -= line_height
 
     feature_mode = cfg.get("feature_mode")
 
@@ -340,19 +371,15 @@ def add_title_page(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], resul
 
 
 def add_features_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
-    """Fügt eine Seite mit einer vollständigen Feature-Liste hinzu.
+    """Fügt Seite(n) mit einer vollständigen Feature-Liste hinzu (mit Pagination).
 
-    So wird sichergestellt, dass alle genutzten Feature-Namen vollständig
-    im Report sichtbar sind (ohne Abschneiden an der Titelseite).
+    So wird sichergestellt, dass alle genutzten Feature-Namen vollständig im Report
+    sichtbar sind, auch wenn die Liste länger ist.
     """
     cfg = results.get("config", {})
     feature_cols = cfg.get("feature_cols", [])
     if not feature_cols:
         return
-
-    fig, ax = plt.subplots(figsize=(8.27, 11.69))
-    ax.axis("off")
-    ax.set_title("Verwendete Features (FEATURE_COLS)", fontsize=12, weight="bold", pad=10)
 
     # Tabelle mit drei Spalten: Index, Feature-Name, kurze Beschreibung
     rows = []
@@ -365,20 +392,82 @@ def add_features_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
             desc = ""
         rows.append([i, col, desc])
 
-    table = ax.table(
-        cellText=rows,
-        colLabels=["#", "feature_name", "description"],
-        loc="center",
-        cellLoc="left",
-        # etwas breitere feature_name-Spalte, dafür minimal weniger Platz für description
-        colWidths=[0.05, 0.35, 0.60],
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(7)
-    table.scale(1.05, 1.15)
+    # Pagination: keep the table readable on A4
+    rows_per_page = 34
+    total_pages = int(np.ceil(len(rows) / rows_per_page))
+    for page_idx in range(total_pages):
+        chunk = rows[page_idx * rows_per_page : (page_idx + 1) * rows_per_page]
+        fig, ax = plt.subplots(figsize=(8.27, 11.69))
+        ax.axis("off")
+        title = "Verwendete Features (FEATURE_COLS)"
+        if total_pages > 1:
+            title += f" – Seite {page_idx + 1}/{total_pages}"
+        ax.set_title(title, fontsize=12, weight="bold", pad=10)
 
-    pdf.savefig(fig)
-    plt.close(fig)
+        table = ax.table(
+            cellText=chunk,
+            colLabels=["#", "feature_name", "description"],
+            loc="center",
+            cellLoc="left",
+            colWidths=[0.06, 0.34, 0.60],
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(7)
+        table.scale(1.05, 1.15)
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def add_config_dump_pages(pdf: PdfPages, exp_id: str, exp_config: Dict[str, Any], results: Dict[str, Any]) -> None:
+    """Adds paginated config dump pages (prevents clipped text and missing params)."""
+
+    def _dump_pages(title: str, obj: Dict[str, Any]) -> None:
+        text = json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False)
+        lines: list[str] = []
+        for raw in text.splitlines():
+            # Wrap long lines (paths) to keep inside page width.
+            wrapped = textwrap.wrap(
+                raw,
+                width=120,
+                break_long_words=False,
+                break_on_hyphens=False,
+                replace_whitespace=False,
+                drop_whitespace=False,
+            )
+            lines.extend(wrapped if wrapped else [""])
+
+        page = 1
+        fig = plt.figure(figsize=(8.27, 11.69))
+        fig.clf()
+        y = 0.965
+        fig.text(0.05, y, title, fontsize=12, weight="bold")
+        fig.text(0.05, y - 0.025, f"EXP_ID: {exp_id}", fontsize=9)
+        y -= 0.055
+
+        line_h = 0.012
+        for line in lines:
+            if y <= 0.04:
+                pdf.savefig(fig)
+                plt.close(fig)
+                page += 1
+                fig = plt.figure(figsize=(8.27, 11.69))
+                fig.clf()
+                y = 0.965
+                fig.text(0.05, y, f"{title} (cont. {page})", fontsize=12, weight="bold")
+                fig.text(0.05, y - 0.025, f"EXP_ID: {exp_id}", fontsize=9)
+                y -= 0.055
+
+            fig.text(0.05, y, line, fontsize=6.5, family="monospace")
+            y -= line_h
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    _dump_pages("Config Dump – data/processed/experiments/<EXP_ID>_config.json", exp_config)
+    cfg = results.get("config", {})
+    if isinstance(cfg, dict) and cfg:
+        _dump_pages("Config Dump – results['config'] (aus Training-JSON)", cfg)
 
 
 def add_legend_page(pdf: PdfPages) -> None:
@@ -422,6 +511,7 @@ def add_legend_page(pdf: PdfPages) -> None:
     write("- intraday_range_pct: (High - Low) / Close – relative Tages-Spanne (Volatilität).")
     write("- upper_shadow / lower_shadow: obere/untere Dochte der Kerzen (High/Low vs. Körper).")
     write("- month / quarter: Kalendermonat und Quartal.")
+    write("- h1_*: Intraday-Features aus stündlichen MT5-Bars (H1) aggregiert auf Tagesbasis.")
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -472,6 +562,18 @@ def add_model_params_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
     write(f"- subsample: {dir_params.get('subsample')}")
     write(f"- colsample_bytree: {dir_params.get('colsample_bytree')}")
     write(f"- scale_pos_weight: {dir_params.get('scale_pos_weight')}")
+    y -= line_height
+
+    mc_params = model_params.get("multiclass")
+    if isinstance(mc_params, dict) and mc_params:
+        write("Multiclass-Baseline (optional, 3-Klassen):", bold=True)
+        write(f"- objective: {mc_params.get('objective')}")
+        write(f"- num_class: {mc_params.get('num_class')}")
+        write(f"- max_depth: {mc_params.get('max_depth')}")
+        write(f"- learning_rate: {mc_params.get('learning_rate')}")
+        write(f"- n_estimators: {mc_params.get('n_estimators')}")
+        write(f"- subsample: {mc_params.get('subsample')}")
+        write(f"- colsample_bytree: {mc_params.get('colsample_bytree')}")
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -745,6 +847,106 @@ def add_combined_table_page(pdf: PdfPages, results: Dict[str, Any]) -> None:
     plt.close(fig)
 
 
+def add_multiclass_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
+    """Adds pages for an optional 3-class baseline model (neutral/up/down)."""
+    mc = results.get("multiclass")
+    if not isinstance(mc, dict):
+        return
+
+    splits = ["train", "val", "test"]
+
+    def _macro_stats(rep: Dict[str, Any]) -> tuple[float, float, float]:
+        if not isinstance(rep, dict):
+            return float("nan"), float("nan"), float("nan")
+        stats = rep.get("macro avg", {})
+        if not isinstance(stats, dict):
+            return float("nan"), float("nan"), float("nan")
+        return (
+            float(stats.get("precision", float("nan"))),
+            float(stats.get("recall", float("nan"))),
+            float(stats.get("f1-score", float("nan"))),
+        )
+
+    macro_prec = []
+    macro_rec = []
+    macro_f1 = []
+    for split in splits:
+        rep = mc.get(split, {}).get("report", {})
+        p, r, f = _macro_stats(rep)
+        macro_prec.append(p)
+        macro_rec.append(r)
+        macro_f1.append(f)
+
+    x = np.arange(len(splits))
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(x - width, macro_prec, width, label="macro precision", color="#4c72b0")
+    ax.bar(x, macro_rec, width, label="macro recall", color="#55a868")
+    ax.bar(x + width, macro_f1, width, label="macro f1", color="#c44e52")
+    ax.set_xticks(x)
+    ax.set_xticklabels(splits)
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Score")
+    ax.set_title("Multiclass-Baseline – Macro-Kennzahlen (neutral / up / down)")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    fig.text(
+        0.01,
+        0.02,
+        "Abbildung: Macro Precision/Recall/F1 der 3-Klassen-Baseline je Split. "
+        "Macro = gleiches Gewicht für neutral/up/down.",
+        fontsize=8,
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+    # Table (Test) – per class
+    rep_test = mc.get("test", {}).get("report", {})
+    if isinstance(rep_test, dict):
+        classes = ["neutral", "up", "down"]
+        rows = []
+        for cls in classes:
+            stats = rep_test.get(cls, {})
+            if not isinstance(stats, dict):
+                stats = {}
+            rows.append(
+                [
+                    cls,
+                    round(float(stats.get("precision", 0.0)), 3),
+                    round(float(stats.get("recall", 0.0)), 3),
+                    round(float(stats.get("f1-score", 0.0)), 3),
+                    int(stats.get("support", 0) or 0),
+                ]
+            )
+
+        fig, ax = plt.subplots(figsize=(8.27, 3.5))
+        ax.axis("off")
+        ax.set_title(
+            "Multiclass-Baseline – Tabelle (Test, neutral/up/down)",
+            fontsize=12,
+            weight="bold",
+            pad=10,
+        )
+        table = ax.table(
+            cellText=rows,
+            colLabels=["klasse", "precision", "recall", "f1", "support"],
+            loc="center",
+            cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.1, 1.2)
+        fig.text(
+            0.01,
+            0.02,
+            "Tabelle: Kennzahlen der drei Klassen (neutral/up/down) "
+            "der Multiclass-Baseline auf dem Test-Split.",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
 def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     """Fügt Confusion-Matrix-Seiten für Signal-, Richtungs- und Kombi-Modell hinzu.
 
@@ -820,6 +1022,36 @@ def add_confusion_pages(pdf: PdfPages, results: Dict[str, Any]) -> None:
     )
     pdf.savefig(fig)
     plt.close(fig)
+
+    # ---------------- Multiclass baseline: neutral / up / down (train/val/test) -------------------
+    mc = results.get("multiclass")
+    if isinstance(mc, dict) and any(isinstance(mc.get(s), dict) for s in splits):
+        fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
+        for ax, split in zip(axes, splits):
+            cm, missing = _normalize_cm(mc.get(split, {}).get("confusion_matrix"), 3)
+            sns.heatmap(
+                cm,
+                annot=True,
+                fmt="d",
+                cmap="Greens",
+                xticklabels=["neutral", "up", "down"],
+                yticklabels=["neutral", "up", "down"],
+                ax=ax,
+            )
+            suffix = " (keine Daten)" if missing else ""
+            ax.set_title(f"Multiclass – {split}{suffix}")
+            ax.set_xlabel("Predicted")
+            ax.set_ylabel("True")
+        plt.tight_layout(rect=(0.02, 0.10, 0.98, 0.95))
+        fig.text(
+            0.01,
+            0.02,
+            "Abbildung: Confusion-Matrizen der 3-Klassen-Baseline (neutral / up / down) "
+            "für Train-, Validierungs- und Test-Split.",
+            fontsize=8,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
 
     # ---------------- Kombiniert: neutral / up / down (Test) -------------------
     cm_combined, missing = _normalize_cm(results.get("combined_test", {}).get("confusion_matrix"), 3)
@@ -1432,10 +1664,11 @@ def _add_trade_simulation_pages_variant(
     settle_at_exit: bool = False,
     outcome_variant: str | None = None,
     variant_name: str | None = None,
+    model_prefix: str = "",
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein."""
     label_params = exp_config.get("label_params", {})
-    title_prefix = f"{variant_name}: " if variant_name else ""
+    title_prefix = f"{model_prefix}{variant_name}: " if variant_name else model_prefix
 
     df = preds.copy().sort_values("date")
 
@@ -1457,9 +1690,14 @@ def _add_trade_simulation_pages_variant(
         dates = pd.DatetimeIndex(df["date"].tolist())
 
         def book_date(exit_dt: pd.Timestamp) -> pd.Timestamp | pd.NaT:
+            # Exit kann (je nach horizon_days) nach dem letzten Test-Tag liegen.
+            # Damit die Settlement-Variante nicht NaT produziert (und offene Trades "verschwinden"),
+            # buchen wir dann konservativ auf den letzten verfügbaren Test-Tag.
+            if len(dates) == 0:
+                return pd.NaT
             i = dates.searchsorted(pd.Timestamp(exit_dt))
             if i >= len(dates):
-                return pd.NaT
+                return dates[-1]
             return dates[i]
 
         df["exit_booked"] = [
@@ -2337,6 +2575,9 @@ def add_trade_simulation_pages(
     preds: pd.DataFrame,
     fx_df: pd.DataFrame,
     exp_config: Dict[str, Any],
+    *,
+    pred_col: str = "combined_pred",
+    model_prefix: str = "",
 ) -> None:
     """Fügt Seiten zur Tradesimulation (Strategie A/B) in den Report ein.
 
@@ -2345,10 +2586,21 @@ def add_trade_simulation_pages(
     """
     label_params = exp_config.get("label_params", {})
 
+    if pred_col not in preds.columns:
+        raise KeyError(
+            f"pred_col='{pred_col}' nicht in Predictions-CSV gefunden. "
+            f"Verfügbare Spalten: {sorted(list(preds.columns))}"
+        )
+
+    preds_use = preds
+    if pred_col != "combined_pred":
+        preds_use = preds.copy()
+        preds_use["combined_pred"] = preds_use[pred_col].astype(str)
+
     _add_trade_simulation_rule_page(
         pdf,
         label_params,
-        title="Variante 1: SL + TP (wie bisher)",
+        title=f"{model_prefix}Variante 1: SL + TP (wie bisher)",
         bullets=[
             "Stop-Loss und Take-Profit werden innerhalb des Fensters geprüft (close-basiert).",
             "Wenn weder SL noch TP getroffen wird: Exit am Horizontende (t+horizon_days).",
@@ -2357,17 +2609,18 @@ def add_trade_simulation_pages(
     )
     _add_trade_simulation_pages_variant(
         pdf,
-        preds,
+        preds_use,
         fx_df,
         exp_config,
         trade_return_fn=_compute_trade_return,
         variant_name="Variante 1",
+        model_prefix=model_prefix,
     )
 
     _add_trade_simulation_rule_page(
         pdf,
         label_params,
-        title="Variante 2: TP-only (kein Stop-Loss, sonst Horizontende)",
+        title=f"{model_prefix}Variante 2: TP-only (kein Stop-Loss, sonst Horizontende)",
         bullets=[
             "Wenn die Label-Schwelle (TP) innerhalb des Fensters erreicht wird: Exit sofort mit TP-Return.",
             "Kein Stop-Loss: wenn TP nicht erreicht wird, wird am Horizontende geschlossen (Return am Horizontende).",
@@ -2376,17 +2629,18 @@ def add_trade_simulation_pages(
     )
     _add_trade_simulation_pages_variant(
         pdf,
-        preds,
+        preds_use,
         fx_df,
         exp_config,
         trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
         variant_name="Variante 2",
+        model_prefix=model_prefix,
     )
 
     _add_trade_simulation_rule_page(
         pdf,
         label_params,
-        title="Variante 3: TP-only + Settlement am Exit-Datum (Timing realistisch)",
+        title=f"{model_prefix}Variante 3: TP-only + Settlement am Exit-Datum (Timing realistisch)",
         bullets=[
             "Trade wird am Tag t eröffnet (Signal up/down).",
             "Exit-Datum: erster TP-Hit per Close, sonst Horizontende.",
@@ -2396,13 +2650,14 @@ def add_trade_simulation_pages(
     )
     _add_trade_simulation_pages_variant(
         pdf,
-        preds,
+        preds_use,
         fx_df,
         exp_config,
         trade_return_fn=_compute_trade_return_tp_or_horizon_no_sl,
         settle_at_exit=True,
         outcome_variant="tp_only",
         variant_name="Variante 3",
+        model_prefix=model_prefix,
     )
 
 
@@ -2662,18 +2917,29 @@ def add_price_with_splits_page(
     val_df = splits["val"]
     test_df = splits["test"]
 
-    train_end = train_df["date"].max()
-    val_end = val_df["date"].max()
-    test_begin = test_df["date"].min()
+    train_end = train_df["date"].max() if not train_df.empty else pd.NaT
+    val_end = val_df["date"].max() if not val_df.empty else pd.NaT
+    test_begin = test_df["date"].min() if not test_df.empty else pd.NaT
 
     fig, ax = plt.subplots(figsize=(10, 3.5))
     ax.plot(df_plot["date"], df_plot["Close"], color="lightgray", label="Close")
 
     # Hintergründe für Train / Val / Test
     ymin, ymax = ax.get_ylim()
-    ax.axvspan(df_plot["date"].min(), train_end, color="#d9f0d3", alpha=0.3, label="Train")
-    ax.axvspan(train_end, val_end, color="#fee0b6", alpha=0.3, label="Val")
-    ax.axvspan(test_begin, df_plot["date"].max(), color="#deebf7", alpha=0.3, label="Test")
+    start_all = df_plot["date"].min()
+    end_all = df_plot["date"].max()
+
+    # Train-Bereich (falls vorhanden)
+    if pd.notna(train_end):
+        ax.axvspan(start_all, train_end, color="#d9f0d3", alpha=0.3, label="Train")
+
+    # Val-Bereich nur, wenn Val-Split nicht leer ist (sonst wäre val_end=NaT -> Plot-Fehler)
+    if pd.notna(train_end) and pd.notna(val_end):
+        ax.axvspan(train_end, val_end, color="#fee0b6", alpha=0.3, label="Val")
+
+    # Test-Bereich (falls vorhanden)
+    if pd.notna(test_begin):
+        ax.axvspan(test_begin, end_all, color="#deebf7", alpha=0.3, label="Test")
 
     ax.set_ylim(ymin, ymax)
     ax.set_xlabel("Datum")
@@ -2704,7 +2970,8 @@ def _ensure_close_with_labels(
     Falls nötig, werden Close-Kurse aus der Label-Datei ergänzt.
     """
     df_plot = df.copy()
-    if "Close" in df_plot.columns:
+    needed = [c for c in ["Close", "High", "Low"] if c not in df_plot.columns]
+    if not needed:
         return df_plot
 
     safe_id = str(exp_config.get("exp_id")).replace(" ", "_")
@@ -2715,7 +2982,8 @@ def _ensure_close_with_labels(
     if labels_path.is_file():
         fx = pd.read_csv(labels_path, parse_dates=["Date"])
         fx = fx.rename(columns={"Date": "date"})
-        df_plot = df_plot.merge(fx[["date", "Close"]], on="date", how="left")
+        cols = ["date"] + [c for c in needed if c in fx.columns]
+        df_plot = df_plot.merge(fx[cols], on="date", how="left")
     else:
         print("[warn] Keine Close-Kurse gefunden – Segmentplots übersprungen.")
     return df_plot
@@ -2878,7 +3146,7 @@ def _plot_segment_rel_small_multiples(
     if max_segments is not None:
         start_dates = start_dates[:max_segments]
 
-    segments: list[tuple[str, range, np.ndarray]] = []
+    segments: list[tuple[str, range, np.ndarray, np.ndarray | None, np.ndarray | None]] = []
     for t0 in start_dates:
         pos = idx.get_loc(t0)
         end_pos = pos + horizon_steps
@@ -2886,12 +3154,20 @@ def _plot_segment_rel_small_multiples(
             continue
         seg = df.iloc[pos : end_pos + 1]
         start_close = seg["Close"].iloc[0]
-        rel = seg["Close"] / start_close - 1.0
+        rel_close = seg["Close"] / start_close - 1.0
+        rel_low = None
+        rel_high = None
+        if "Low" in seg.columns and "High" in seg.columns:
+            low = seg["Low"].to_numpy(dtype=float, copy=False)
+            high = seg["High"].to_numpy(dtype=float, copy=False)
+            if np.isfinite(low).any() and np.isfinite(high).any():
+                rel_low = low / float(start_close) - 1.0
+                rel_high = high / float(start_close) - 1.0
         if labels_for_dates is not None:
             seg_label = labels_for_dates.get(t0, str(t0))
         else:
             seg_label = seg.index[0]
-        segments.append((str(seg_label), range(len(rel)), rel.to_numpy()))
+        segments.append((str(seg_label), range(len(rel_close)), rel_close.to_numpy(), rel_low, rel_high))
 
     if not segments:
         fig, ax = plt.subplots(figsize=(8.27, 3.0))
@@ -2903,7 +3179,16 @@ def _plot_segment_rel_small_multiples(
         return
 
     # y-Achse: dynamisch zoomen, damit kleine Änderungen besser sichtbar sind.
-    all_vals = np.concatenate([vals for _, _, vals in segments]) if segments else np.array([0.0])
+    def _collect_vals(seg: tuple[str, range, np.ndarray, np.ndarray | None, np.ndarray | None]) -> np.ndarray:
+        _, _, rel, lo, hi = seg
+        parts = [rel]
+        if lo is not None:
+            parts.append(lo)
+        if hi is not None:
+            parts.append(hi)
+        return np.concatenate(parts)
+
+    all_vals = np.concatenate([_collect_vals(s) for s in segments]) if segments else np.array([0.0])
     max_abs = float(np.nanmax(np.abs(all_vals))) if all_vals.size else 0.0
     thr_abs = 0.0
     if up_threshold is not None:
@@ -2938,6 +3223,7 @@ def _plot_segment_rel_small_multiples(
         show_thr_up_label = True
         show_thr_down_label = True
         show_adv_label = True
+        show_hilo_label = True
         for ax in axes_flat:
             ax.set_ylim(-y_lim, y_lim)
             ax.set_yticks(yticks)
@@ -3003,8 +3289,26 @@ def _plot_segment_rel_small_multiples(
                     show_adv_label = False
 
         # Segmente plotten
-        for ax, (label, steps, rel_values) in zip(axes_flat, page_segments):
-            ax.plot(list(steps), rel_values, marker="o")
+        for ax, (label, steps, rel_values, rel_low, rel_high) in zip(axes_flat, page_segments):
+            x = np.array(list(steps), dtype=int)
+            if (
+                rel_low is not None
+                and rel_high is not None
+                and len(rel_low) == len(x)
+                and len(rel_high) == len(x)
+            ):
+                ax.fill_between(
+                    x,
+                    rel_low,
+                    rel_high,
+                    color="#9e9e9e",
+                    alpha=0.20,
+                    linewidth=0.0,
+                    label="High–Low" if show_hilo_label else None,
+                )
+                show_hilo_label = False
+
+            ax.plot(x, rel_values, marker="o", color="#4c72b0", linewidth=2.0)
             ax.set_title(label, fontsize=8)
 
         # übrige Achsen leeren, aber Größe unverändert lassen
@@ -3287,6 +3591,16 @@ def add_feature_importance_pages(pdf: PdfPages, results: Dict[str, Any]) -> None
             caption="Abbildung: Wichtigkeit der Features für das Richtungs-Modell (down vs up).",
         )
 
+    mc_params = model_params.get("multiclass", {})
+    mc_fi = mc_params.get("feature_importances_") if isinstance(mc_params, dict) else None
+    if isinstance(mc_fi, list) and len(mc_fi) == len(feature_cols):
+        plot_single(
+            mc_fi,
+            "Feature Importance – Multiclass-Baseline",
+            color="#5ab4ac",
+            caption="Abbildung: Wichtigkeit der Features für die 3-Klassen-Baseline (neutral/up/down).",
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PDF-Report für Zwei-Stufen-XGBoost-Experiment erzeugen.")
@@ -3325,6 +3639,7 @@ def main() -> None:
         add_legend_page(pdf)
         add_model_params_page(pdf, results)
         add_features_page(pdf, results)
+        add_config_dump_pages(pdf, exp_id, exp_config, results)
 
         # 2) Datenübersicht
         add_distributions_page(pdf, df)
@@ -3338,6 +3653,7 @@ def main() -> None:
         add_direction_page(pdf, results)
         add_combined_page(pdf, results)
         add_combined_table_page(pdf, results)
+        add_multiclass_pages(pdf, results)
         add_confusion_pages(pdf, results)
         add_confusion_tables_page(pdf, results)
 
@@ -3351,6 +3667,15 @@ def main() -> None:
             fx_labels = load_fx_labels_for_exp(project_root, exp_id)
             if fx_labels is not None:
                 add_trade_simulation_pages(pdf, preds, fx_labels, exp_config)
+                if "multiclass_pred" in preds.columns:
+                    add_trade_simulation_pages(
+                        pdf,
+                        preds,
+                        fx_labels,
+                        exp_config,
+                        pred_col="multiclass_pred",
+                        model_prefix="Multiclass-Baseline – ",
+                    )
 
         add_feature_importance_pages(pdf, results)
 

@@ -1,0 +1,1547 @@
+BERICHT – Projektanalyse (Code + Vorgehen + Commits)
+Projekt: hs2025_ml_project (EURUSD – Zwei‑Stufen‑XGBoost: Signal + Richtung, inkl. Tradesimulation)
+Modul‑Anlassnummer (laut Aufgabenblatt): 3-25HS.W-B-BAI-000403.EN/TZ24
+Stand der Analyse: 2025-12-18
+Repository-Pfad (lokal): /Users/jeremynathan/Documents/GitHub/hs2025_ml_project/hs2025_ml_project
+
+Hinweis zur Lesart:
+- Dieser Bericht ist so strukturiert, dass er direkt als Input für Manus AI genutzt werden kann.
+- Code‑/Datenpfade sind bewusst konkret angegeben, damit Folien (und Demos) reproduzierbar sind.
+- „Commits inkl. Inhalt“ wird als: pro Commit Zweck + geänderte Dateien + inhaltliche Wirkung (fachlich/technisch) dargestellt.
+
+================================================================================
+ABSTRACT / ZUSAMMENFASSUNG
+================================================================================
+Ziel des Projekts ist der Aufbau einer reproduzierbaren ML‑Pipeline, die aus täglichen EURUSD‑Daten (Preise und optional News/Sentiment) Handelssignale ableiten kann. Um die typische „neutral dominiert“‑Problematik zu adressieren und Entscheidungen trading‑nah zu strukturieren, wurde ein Zwei‑Stufen‑Ansatz gewählt:
+1) Stufe 1 klassifiziert „Trade/Move vs. Neutral“ (Signal).
+2) Stufe 2 klassifiziert „Up vs. Down“ (Richtung) nur für Move‑Fälle.
+
+Kernbeiträge:
+- Parametrisierbares Labeling (mehrere Varianten: strikt, tolerant, hit‑within‑horizon, first‑hit‑wins; zusätzlich Datenquellen‑Optionen Yahoo vs. EODHD).
+- Feature‑Engineering für tabellarische Zeitreihendaten (Preis‑Features, Kalender‑Features, US‑Holiday‑Flags; optional News‑Aggregationen).
+- Zeitlich korrektes Train/Val/Test‑Splitting (Test ab 2025‑01‑01).
+- Automatisches Reporting (PDF) inkl. Confusion Matrices, Metriken und (vereinfachter) Tradesimulation / P&L‑Analysen.
+- Experiment‑Management über EXP_ID (Config/Labels/Datasets/Results verknüpft) und auto‑generierte Timelines.
+
+Ergebnisfokus:
+Die „finalen“ Experimente in diesem Repo sind die EXP_IDs mit Suffix `_result` (z.B. `hp_long_result`, `hv_result`), weil sie als zusammenfassende Endläufe (inkl. PDF/Predictions) im Ordner `notebooks/results/final_two_stage/` abgelegt sind. Wichtig: Welche EXP_ID „am meisten Gewinn“ macht, hängt stark von den Simulations‑Annahmen (TP/SL‑Variante, Hebel, Einsatz/Kapital und ob P&L sofort oder erst beim Exit verbucht wird) ab. In diesem Bericht werden Trading‑Zahlen daher nicht aus Markdown‑Notizen übernommen, sondern direkt aus den committed Result‑Artefakten (Predictions/Labels) mit dem Report‑Code (`scripts/generate_two_stage_report.py`) neu berechnet. Für die im Projekt verwendete „Variante 3“ (P&L‑Verbuchung am Exit) werden die Resultate der `_result`‑Experimente explizit ausgewiesen.
+
+================================================================================
+INHALTSVERZEICHNIS (für Manus AI / PowerPoint)
+================================================================================
+1. Einleitung
+2. Ziele & Aufgabenstellung
+3. Projektstruktur (Repository‑Aufbau)
+4. Daten & Quellen (FX + News)
+5. Theorie (ML‑Grundlagen, XGBoost, Zwei‑Stufen‑Modell, Zeitreihen‑Evaluation)
+6. Methodik / Vorgehen / Prozeduren (End‑to‑End Pipeline)
+7. Implementierung (wichtige Module/Dateien)
+8. Experimente & Versionierung (EXP_ID, Serien v/nv/hv/hp, Timeline)
+9. Ergebnisse (Metriken + zentrale Artefakte)
+10. Diskussion / Interpretation (Warum price_only, Grenzen, Bias, Datenqualität)
+11. Herausforderungen & Learnings
+12. Schlussfolgerungen
+13. Empfehlungen / Next Steps
+14. Referenzen / Bibliographie
+15. Anhänge (Abbildungen/Tabelle‑Liste, Run‑Commands, Commit‑Changelog)
+
+================================================================================
+VERZEICHNIS DER ABBILDUNGEN UND TABELLEN (Vorschläge)
+================================================================================
+Abbildungen (empfohlen für Folien; existierende Artefakte im Repo):
+F1: Datenpipeline Überblick (aus Doku) – `docs/image.png` (und `docs/image-1.png`…`docs/image-3.png`)
+F2: Experiment‑Timeline (Tabelle) – `docs/two_stage_timeline.md` bzw. CSV `docs/two_stage_timeline.csv`
+F3: Confusion Matrices & Reports (PDF‑Seiten) – z.B. `notebooks/results/final_two_stage/two_stage_final__hp_long_result_report.pdf` oder `notebooks/results/final_two_stage/two_stage_final__hv_result_report.pdf`
+F4: P&L Vergleich price_only vs news+price – erzeugbar via `scripts/compare_experiments_pnl.py`
+F5: Vergleich Yahoo vs EODHD Preisquelle – Notebooks `notebooks/eodhd_two_stage/*` + Scripts `scripts/compare_yahoo_vs_eod_experiments.py`
+
+Tabellen (für Bericht und Folien):
+T1: Ordnerstruktur / Artefakt‑Mapping (siehe Abschnitt 3)
+T2: Feature‑Liste (price_only vs news+price) (siehe Abschnitt 7/9)
+T3: Label‑Parameter & Label‑Verteilungen (siehe Abschnitt 4/6/9)
+T4: Test‑Metriken je Experiment (aus `docs/two_stage_timeline.csv`)
+T5: Commit‑Changelog (Anhang)
+
+================================================================================
+1) EINLEITUNG
+================================================================================
+Problemstellung (fachlich):
+EURUSD ist eine hochliquide FX‑Zeitreihe, deren kurzfristige Bewegungen stark von Makro‑Einflüssen, Marktstimmung, Volatilität und strukturellen Effekten (Session‑Cut, Feiertage, Datenanbieter) geprägt sind. Ein ML‑Ansatz muss daher:
+- Daten sauber aufbereiten (zeitlich korrekt, ohne Lookahead‑Leakage),
+- Labels so definieren, dass sie (a) trading‑nah sind und (b) nicht degenerieren (zu wenige oder zu viele Trades),
+- Evaluationskriterien wählen, die sowohl ML‑Metriken als auch trading‑relevante Kennzahlen abbilden.
+
+Projektidee:
+Statt direkt ein 3‑Klassen‑Modell (neutral/up/down) zu trainieren, wird ein Zwei‑Stufen‑Modell genutzt, das dem Trading‑Entscheidungsprozess ähnelt:
+„Handle ich überhaupt?“ → „Wenn ja, welche Richtung?“
+
+================================================================================
+2) ZIELE & AUFGABENSTELLUNG (inkl. Modul‑Kompetenzen)
+================================================================================
+Ziele:
+Z1: Reproduzierbare Pipeline zur Datenbeschaffung, Label‑Erzeugung, Feature‑Engineering, Modelltraining und Reporting.
+Z2: Systematisches Experiment‑Vorgehen (Parameter‑Sweeps, Versionsnamen/EXP_ID, Artefakt‑Ablage).
+Z3: Evaluation mit zeitlichem Split und nachvollziehbarer Auswahl eines finalen Setups.
+Z4: Kombination „symbolisch/regelbasiert“ (Labeling/Tradesimulation/Cost‑Matrix/Thresholds) + „ML“ (XGBoost‑Modelle).
+
+Kompetenz‑Mapping (aus Aufgabenblatt, sinngemäß):
+- Anwendungssituation analysieren & Methode wählen:
+  - Entscheidung für Zwei‑Stufen‑Ansatz, Threshold‑Tuning, zeitliche Splits.
+- Daten für ML aufbereiten:
+  - Rohdaten (FX/News) → Features → Trainingsdaten; strikte Vermeidung von Lookahead.
+- Wissen über Anwendung repräsentieren:
+  - Config‑Files pro EXP_ID, auto‑generierte Timelines, PDF‑Reports (Audit‑Trail).
+- Symbolische KI + ML kombinieren:
+  - Regelbasierte Label‑Definitionen, Konfliktauflösung (first‑hit), cost‑basierte Trading‑Thresholds + ML‑Probabilities.
+- Qualität beurteilen:
+  - Vergleich Metriken (F1/Confusion) vs. Trading‑P&L, Datenquellen‑Vergleiche.
+- Lösung präsentieren:
+  - Reports, Plots, klare Slide‑Story (Was? Wie? Tools? Schwierigkeiten? Resultate/Demo?)
+
+================================================================================
+3) PROJEKTSTRUKTUR (Repository‑Aufbau)
+================================================================================
+Top‑Level Verzeichnisse:
+- `src/`            Python‑Module (Daten, Features, Modelle, Utils)
+- `scripts/`        CLI‑Skripte für Reporting/Vergleiche/Downloads
+- `notebooks/`      Jupyter‑Workflows (Data Prep, Training, Evaluation, Final‑Pipeline)
+- `data/raw/`       Rohdaten (FX CSV, News JSONL)
+- `data/processed/` Verarbeitete Daten + Experiment‑Artefakte (Labels, Datasets, Configs)
+- `docs/`           Projekt‑Dokumentation + auto‑generierte Timelines/Reports (Markdown/CSV/PNG)
+- `results/`        ältere/zusätzliche Ergebnis‑Artefakte (historisch)
+- `config/`         Konfiguration für Daten‑Download (z.B. Yahoo Symbole)
+- `vertex_ai/`      separates Test‑Script (nicht Kern‑Pipeline)
+- `powerpoint/`     Ablage für Präsentationsmaterial (Projekt‑spezifisch)
+
+Wichtige Dateien (Orientierung):
+- Setup/Meta:
+  - `requirements.txt`
+  - `README.md`
+  - `LICENSE`
+  - `CHAT_JOURNAL.md` (Projektjournal/Notizen)
+- Doku:
+  - `docs/README_data_pipeline.md`, `docs/data_pipeline_eurusd_xgboost.md`
+  - `docs/experiment_timeline.md`, `docs/two_stage_timeline.md`
+  - `docs/presentation_report_hp_long_final_yahoo.md`, `docs/full_report_hp_long_final_yahoo.md` (existieren; werden in diesem Bericht nicht als Zahlenquelle verwendet)
+- Kern‑Code:
+  - Labeling: `src/data/label_eurusd.py`, `src/data/label_eurusd_trade.py`
+  - Features: `src/features/eurusd_features.py`
+  - Dataset‑Build: `src/data/build_training_set.py`
+  - Training: `src/models/train_xgboost_two_stage.py`
+  - Reporting: `scripts/generate_two_stage_report.py`
+
+Artefakte / Outputs:
+- Experiment‑Configs: `data/processed/experiments/*_config.json`
+- Labels je Experiment: `data/processed/fx/eurusd_labels__<EXP_ID>.csv`
+- Trainingsdaten je Experiment: `data/processed/datasets/eurusd_news_training__<EXP_ID>.csv`
+- Finale Ergebnisse (Final‑Notebooks): `notebooks/results/final_two_stage/two_stage_final__<EXP_ID>.{json,csv,pdf}`
+
+================================================================================
+4) DATEN & QUELLEN
+================================================================================
+4.1 FX‑Preisdaten (EURUSD)
+- Yahoo Finance (Symbol üblicherweise `EURUSD=X`), CSV lokal: `data/raw/fx/EURUSDX.csv`
+- Alternative Preisquelle EODHD: `data/raw/fx/EURUSDX_eodhd.csv` (wenn erzeugt/geladen)
+
+Wichtiger Daten‑Aspekt: „Daily Cut“
+- Daily‑Kerzen hängen von Session‑Close/Timezone ab.
+- Yahoo und EODHD können bei ähnlichem Preisniveau unterschiedliche Daily‑Returns erzeugen.
+- Für Live‑Trading müsste idealerweise der Broker‑Cut reproduziert werden (oder Broker‑OHLC direkt).
+
+4.2 News‑Daten (EODHD)
+- Rohformat JSONL: `data/raw/news/eodhd_news*.jsonl` (eine Zeile = ein Artikel)
+- Tagesaggregation: `src/data/prepare_eodhd_news.py` → `data/processed/news/eodhd_daily_features.csv`
+
+Coverage‑Problem (entscheidend):
+- News+Price‑Training nutzt Merge (inner join) auf Datum.
+- Dadurch reduziert sich die Datenmenge auf den Schnitt von News‑Coverage und Preislabels.
+Beispiel (aus den vorhandenen Datasets):
+- `hp_long_final_yahoo` (price_only): 2824 Zeilen, 2015‑01‑01…2025‑11‑05
+- `hv_long_final_yahoo` (news+price): 1163 Zeilen, 2020‑04‑14…2025‑11‑05
+→ Das erklärt, warum price_only oft robuster wirkt (mehr Trainingshistorie).
+
+================================================================================
+5) THEORIE (kompakt, präsentationsfähig)
+================================================================================
+5.1 Tabellarisches ML auf Zeitreihen
+- Kein Shuffle‑Split, sondern chronologisches Splitten (sonst Leakage).
+- Features dürfen nur Informationen bis inkl. Tag t verwenden.
+
+5.2 XGBoost (Gradient Boosted Trees)
+- Stark für tabellarische Daten, robust gegenüber Nichtlinearitäten und Interaktionen.
+- Liefert Wahrscheinlichkeiten (binary:logistic), die per Threshold in Klassen umgewandelt werden.
+
+5.3 Zwei‑Stufen‑Modell (Signal + Richtung)
+Motivation:
+- Trading braucht „No Trade“ als echte Option.
+- Stufe 1: neutral vs move (Trade‑Filter).
+- Stufe 2: up vs down nur auf Move‑Tagen (Richtung).
+Vorteil:
+- Stabilere Wahrscheinlichkeiten pro Teilproblem, leichteres Threshold‑Tuning.
+
+5.4 Metriken vs Trading‑Ziel
+- Klassische Metriken: Precision/Recall/F1, Confusion Matrix.
+- Trading‑relevant: Trade‑Frequenz, Trefferquote, P&L (inkl. TP/SL‑Annahmen, Hebel).
+- Wichtig: Maximales F1 bedeutet nicht automatisch maximalen Profit (Kosten, asymmetrische Risiken).
+
+================================================================================
+6) METHODIK / VORGEHEN / PROZEDUREN (End‑to‑End)
+================================================================================
+6.1 Phase 1 – Setup & Reproduzierbarkeit
+- Python‑Env via `.venv`, Abhängigkeiten via `requirements.txt`.
+- Git‑basierte Versionierung + EXP_ID‑basiertes Artefakt‑Tracking.
+
+6.2 Phase 2 – Datenbeschaffung
+FX (Yahoo):
+- Config: `config/symbols.yaml`
+- Runner: `scripts/fetch_finance.sh` (ruft `python -m src.data.load_finance`)
+News (EODHD):
+- Downloader: `python3 -m src.data.fetch_eodhd_news` (API‑Token erforderlich)
+
+6.3 Phase 3 – News‑Tagesfeatures (optional)
+- `python3 -m src.data.prepare_eodhd_news`
+- Output: `data/processed/news/eodhd_daily_features.csv`
+
+6.4 Phase 4 – Labeling (mehrere Varianten)
+Primär (Close‑Path‑Labeling): `src/data/label_eurusd.py`
+Kernparameter:
+- `horizon_days` (z.B. 4)
+- `up_threshold` / `down_threshold` (z.B. ±0.004 = ±0.4%)
+- `strict_monotonic` (True/False)
+Erweiterungen (Evolution über das Projekt):
+- `max_adverse_move_pct` (tolerant): begrenzt Gegenbewegung im Horizontfenster.
+- `hit_within_horizon`: Schwelle reicht, wenn sie irgendwo im Fenster erreicht wird (Take‑Profit‑nah).
+- `first_hit_wins`: löst Konflikte, wenn Up‑ und Down‑Schwelle im selben Fenster getroffen werden.
+- `price_source` (yahoo/eodhd) + `drop_weekends` (gegen Wochenende‑Zeilen in manchen Quellen).
+
+Alternative trading‑nahe Labels (OHLC TP/SL): `src/data/label_eurusd_trade.py`
+- Nutzt High/Low, prüft TP/SL‑Treffer innerhalb Horizont.
+- Konfliktlösung für TP&SL in gleicher Kerze über `intraday_tie_breaker`.
+- Optional ATR‑Stop (sl_mode='atr').
+
+6.5 Phase 5 – Dataset‑Build
+News+Price:
+- `src/data/build_training_set.py` (merge labels + news)
+Price‑only:
+- `build_price_only_training_dataframe_from_labels(...)` (stubbt News‑Spalten, nutzt aber dieselbe Feature‑Engine)
+Feature‑Engineering:
+- `src/features/eurusd_features.py` (Rolling returns, Volatilität, Candle‑Form, Kalender, US‑Feiertage)
+
+6.6 Phase 6 – Training & Evaluation
+Training:
+- `src/models/train_xgboost_two_stage.py` (Zwei‑Stufen‑Training, zeitlicher Split)
+Split‑Definition:
+- Teststart standard: 2025‑01‑01
+- Pretest wird chronologisch in Train/Val geteilt (standard 80/20)
+Wichtige Robustheitsmaßnahmen:
+- `scale_pos_weight` für unausgeglichene Klassen (Stufe 1 relevant, je nach Label‑Definition).
+- Guardrails: Fehler, wenn y_train nur eine Klasse enthält (typisch bei zu strengen Labels oder Filter‑Degeneration).
+
+6.7 Phase 7 – Reporting & Trading‑Ableitung
+PDF‑Report:
+- `scripts/generate_two_stage_report.py` erzeugt PDF inkl. Confusion Matrices, Metriken, Tabellen und (vereinfachter) Tradesimulation.
+Trading‑Ableitung:
+- Modell liefert Probabilities: P(move) und P(up).
+- Aus Probabilities werden Trades abgeleitet via:
+  - `signal_threshold_trade` (Trade‑Filter)
+  - `direction_threshold_down` / `direction_threshold_up` (No‑Trade‑Zone zwischen den Schwellen)
+- Zusätzlich wurden kostenbasierte Threshold‑Tuning‑Varianten (Cost‑Matrix/P&L‑Optimierung) entwickelt.
+
+================================================================================
+7) IMPLEMENTIERUNG (wichtige Module/Dateien)
+================================================================================
+7.1 Daten‑Utilities
+- `src/utils/io.py`: zentrale Pfadkonstanten `DATA_RAW`, `DATA_PROCESSED` (stellt Verzeichnisse sicher).
+
+7.2 FX‑Loader
+- `src/data/load_finance.py`: lädt Yahoo‑Daten (yfinance) gemäß `config/symbols.yaml`.
+- `scripts/fetch_finance.sh`: Shell‑Entry, aktiviert `.venv` und startet den Loader.
+
+7.3 Labeling (Close‑Path)
+- `src/data/label_eurusd.py`: Kernlogik für Label‑Vergabe + neue Optionen (tolerant, hit, first‑hit, data source, weekend filter).
+
+7.4 Labeling (Trade‑nah)
+- `src/data/label_eurusd_trade.py`: TP/SL‑basiertes Labeling auf OHLC (daily), inkl. ATR‑Stop Option.
+
+7.5 Features
+- `src/features/eurusd_features.py`: Rolling‑Preisfeatures (1d/5d/30d), Candle‑Ratios, News‑Aggregationen (rolling/lag), Kalender‑ und Holiday‑Flags.
+
+7.6 Training
+- `src/models/train_xgboost_two_stage.py`:
+  - `split_train_val_test(...)` (chronologisch)
+  - `train_xgb_binary(...)` (XGBClassifier Defaults + Early Stopping)
+  - `build_signal_targets(...)`, `build_direction_targets(...)`
+
+7.7 Reporting/Analyse‑Tools
+- `scripts/generate_two_stage_report.py`: PDF‑Reporting + Tradesimulation + Auswertungen.
+- `scripts/compare_experiments_pnl.py`: P&L‑Vergleich zweier Experimente (z.B. price_only vs news+price).
+- `scripts/compare_yahoo_vs_eod_experiments.py`, `scripts/eval_yahoo_model_on_eod.py`: Datenquellen‑Vergleiche.
+
+================================================================================
+8) EXPERIMENTE & VERSIONIERUNG (EXP_ID, Serien, Timeline)
+================================================================================
+8.1 EXP_ID‑Prinzip
+Ziel: Reproduzierbarkeit und Audit‑Trail:
+- Ein Experiment hat eine eindeutige ID (z.B. `hp_long_final_yahoo`).
+- Zu dieser ID gehören:
+  - Config (`data/processed/experiments/<EXP_ID>_config.json`)
+  - Labels (`data/processed/fx/eurusd_labels__<EXP_ID>.csv`)
+  - Dataset (`data/processed/datasets/eurusd_news_training__<EXP_ID>.csv`)
+  - Results/Reports (`notebooks/results/**/two_stage*__<EXP_ID>.*`)
+
+8.2 Serien‑Konzept (aus EXP_ID‑Namensschema + Artefakten ablesbar)
+- `v*`: frühe Baselines (striktere Labels, erste Pipeline‑End‑to‑End).
+- `nv*`: großer Varianten‑Sweep (Threshold/Horizon/Toleranz).
+- `hv*`: hit‑within‑horizon Serie (trading‑naher als Endpunkt‑Return).
+- `hp*`: price_only Baselines (News weggelassen).
+- `*_eod*`: Experimente mit EODHD‑Preisquelle statt Yahoo.
+
+8.3 Hinweis zu auto‑generierten Übersichten
+Im Repo existieren auto‑generierte Übersichten (`docs/two_stage_timeline.*`, `docs/experiment_timeline.*`). Sie sind hilfreich für Präsentationen, können aber als sekundäre Darstellung veralten. Für diesen Bericht werden die relevanten Zahlen (insb. P&L) direkt aus den primären Artefakten (Configs/Predictions/Labels) rekonstruiert.
+
+================================================================================
+9) ERGEBNISSE (Metriken + zentrale Artefakte)
+================================================================================
+9.1 Finale Experimente (`*_result`) – zentrale Resultate
+
+In `notebooks/results/final_two_stage/` liegen mehrere Endläufe mit Suffix `_result`:
+- `hp_result` (price_only)
+- `hv_result` (news+price)
+- `hp_long_result` (price_only, „long“ Setup)
+- sowie EOD‑Varianten: `hp_eod_result`, `hv_eod_result`, `hp_long_eod_result`
+
+Diese Experimente werden hier als „final“ behandelt, weil sie als zusammenfassende Resultat‑Artefakte (JSON/Metrics/Predictions/PDF) committed vorliegen und im Projektverlauf als Endstände genutzt wurden.
+
+Trading‑P&L wird für „Variante 3“ ausgewiesen:
+- Variante 3 = Exit‑Settlement: P&L wird nicht am Signaltag, sondern erst am Exit‑Datum verbucht (entspricht `tp_only_exit` bzw. `sl_tp_exit` in den Vergleichstools).
+- Quelle der Berechnung: `scripts.generate_two_stage_report._compute_trade_outcome(...)` + Exit‑Booking auf den nächsten verfügbaren Test‑Tag.
+
+Assumptions (wie in den vorhandenen Vergleichstools; skalieren mit Einsatz/Hebel):
+- Strategie A: fixer Einsatz `stake_fixed=100 CHF` pro Trade (linear in Einsatz und Hebel)
+- Strategie B: Startkapital `1000 CHF`, pro Trade `10%` Kapital (Compounding)
+- Hebel: Auswertung für `lev=20`
+- Varianten:
+  - `sl_tp_exit` (konservativer): Take‑Profit = Schwelle, Stop‑Loss = `max_adverse_move_pct`; Trade auf true neutral wird als Stop‑Loss gewertet
+  - `tp_only_exit` (optimistischer): kein Stop‑Loss, nur TP oder Horizontende
+
+Resultate (Variante 3, lev=20, Strategie B):
+- `hp_long_result`:
+  - `sl_tp_exit`: Trades 135, P&L ≈ +2779.90 CHF
+  - `tp_only_exit`: Trades 135, P&L ≈ +3898.29 CHF
+- `hv_result`:
+  - `sl_tp_exit`: Trades 120, P&L ≈ +1383.74 CHF
+  - `tp_only_exit`: Trades 120, P&L ≈ +2158.18 CHF
+- `hp_result`:
+  - `sl_tp_exit`: Trades 51, P&L ≈ +87.62 CHF
+  - `tp_only_exit`: Trades 51, P&L ≈ −253.27 CHF
+
+Interpretation:
+- Unter Variante 3 ist `hp_long_result` im Repo (für die `_result`‑Gruppe) der stärkste Gewinnträger.
+- `hv_result` (mit News) ist ebenfalls deutlich profitabel, aber unter denselben Annahmen schwächer als `hp_long_result`.
+- `hp_result` ist sensitiv: je nach Simulationsvariante kann es sogar negativ werden (hier `tp_only_exit`), was die Bedeutung der Variantendefinition unterstreicht.
+
+Zentrale Artefakte (Beispiele):
+- `notebooks/results/final_two_stage/two_stage_final__hp_long_result_report.pdf`
+- `notebooks/results/final_two_stage/two_stage_final__hv_result_report.pdf`
+- `notebooks/results/final_two_stage/two_stage_final__hp_long_result_predictions.csv`
+- `notebooks/results/final_two_stage/two_stage_final__hv_result_predictions.csv`
+
+9.2 Referenz‑Experiment (nicht „_result“): `hp_long_final_yahoo` (price_only)
+Label‑Config: `data/processed/experiments/hp_long_final_yahoo_config.json`
+- horizon_days=4
+- up_threshold=+0.004 / down_threshold=-0.004
+- strict_monotonic=false
+- max_adverse_move_pct=0.01 (tolerant)
+- hit_within_horizon=true
+
+Datensatz‑Umfang (aus CSV):
+- Labels/Dataset Zeilen: 2824 (2015‑01‑01…2025‑11‑05)
+- Splitgrößen (test_start=2025‑01‑01, train_frac=0.8):
+  - Train 2084 / Val 522 / Test 218
+Label‑Verteilung (gesamt):
+- down 1267, up 1176, neutral 381
+
+Model‑Metriken (positive Klasse: move für Signal, up für Direction; Quelle: `..._metrics.csv`):
+- Signal F1(move): train 0.926, val 0.840, test 0.920
+- Direction F1(up): train 0.766, val 0.751, test 0.763
+
+Trading‑Thresholds (aus `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo.json`):
+- signal_threshold_trade = 0.425
+- direction_threshold_down = 0.300
+- direction_threshold_up = 0.675
+
+Combined 3‑Klassen‑Metriken (Test; Quelle: `two_stage_final__hp_long_final_yahoo.json`):
+- Accuracy ≈ 0.427
+- Macro‑F1 ≈ 0.412
+Interpretation:
+- Macro‑F1 ist durch schwache Neutral‑Erkennung gedrückt (Trade‑Setups erzeugen relativ wenige Neutral‑Tage im Test).
+- Trading‑Profit kann dennoch gut sein, wenn Trades/Thresholds sinnvoll gesetzt sind.
+
+Trading‑Resultate (vereinfachte Tradesimulation; direkt neu berechnet aus Artefakten; NICHT „Variante 3“):
+Quelle:
+- Predictions: `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_predictions.csv`
+- FX‑Labels/OHLC: `data/processed/fx/eurusd_labels__hp_long_final_yahoo.csv`
+- Label‑Params: `data/processed/experiments/hp_long_final_yahoo_config.json`
+- Simulation‑Code: `scripts/generate_two_stage_report.py` (`_compute_trade_return*`)
+
+Assumptions (wie in den Report‑Tools; „sofortige Verbuchung“, nicht Exit‑Settlement):
+- Testzeitraum = Predictions‑CSV (ab 2025‑01‑01 Split; hier 2025‑01‑02…2025‑11‑05)
+- Strategie A: fixer Einsatz `stake_fixed=100 CHF` pro Trade (linear in Einsatz und Hebel)
+- Strategie B: Startkapital `1000 CHF`, pro Trade `10%` Kapital (Compounding)
+- Hebel: Auswertung für `lev=1` und `lev=20`
+- Variante `sl_tp` (konservativer): Take‑Profit = Schwelle, Stop‑Loss = `max_adverse_move_pct`; Trade auf true neutral wird als Stop‑Loss gewertet
+- Variante `tp_only` (optimistischer): kein Stop‑Loss, nur TP oder Horizontende; true neutral wird nicht extra bestraft
+
+Ergebnis `hp_long_final_yahoo` (Trades = 105):
+- Variante `sl_tp`:
+  - Strategie A: +24.76 CHF (lev 1) / +495.16 CHF (lev 20)
+  - Strategie B: +25.05 CHF (lev 1) / +632.89 CHF (lev 20)
+- Variante `tp_only`:
+  - Strategie A: +31.07 CHF (lev 1) / +621.32 CHF (lev 20)
+  - Strategie B: +31.54 CHF (lev 1) / +854.93 CHF (lev 20)
+
+Wichtig zur Einordnung:
+Diese Zahlen sind nicht „der“ maximale Gewinn im Repo, sondern das Ergebnis dieser EXP_ID unter der hier verwendeten „sofortigen Verbuchung“ (Variante 1/2). Wenn du „Variante 3“ nutzt (Exit‑Settlement), sind die `_result`‑Experimente der korrekte Vergleichsmaßstab (siehe 9.1).
+
+Zentrale Artefakte:
+- JSON (Config + Reports): `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo.json`
+- Metriken (CSV): `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_metrics.csv`
+- Predictions (CSV): `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_predictions.csv`
+- PDF‑Report: `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo_report.pdf`
+
+9.2 Vergleich: `hv_long_final_yahoo` (news+price)
+Wichtigster struktureller Unterschied:
+- Durch News‑Merge weniger Daten: 1163 Zeilen (2020‑04‑14…2025‑11‑05).
+Metriken (Test):
+- Signal F1(move) ≈ 0.914
+- Direction F1(up) ≈ 0.756
+Combined 3‑Klassen (Test):
+- Accuracy ≈ 0.477, Macro‑F1 ≈ 0.433 (höher als price_only)
+Warum trotzdem price_only als Fokus?
+- In der Tradesimulation waren price_only Setups robuster/profitabler.
+- News‑Coverage begrenzt die Trainingshistorie und kann dadurch die Generalisierung schwächen.
+
+9.3 Datenquellen‑Vergleich (Yahoo vs EODHD)
+Im Projekt wurden zusätzliche Notebooks/Experimente für EODHD‑FX aufgebaut:
+- `notebooks/eodhd_two_stage/*` + Scripts in `scripts/` (Download, Evaluation, Vergleich)
+Ziel:
+- Quantifizieren, wie stark Preisquelle/Cut das Labeling und die Modellperformance beeinflussen.
+Wichtige technische Maßnahme:
+- `drop_weekends=True` Option, da bestimmte Quellen Wochenende‑Zeilen enthalten können.
+
+9.4 P&L‑Ranking (Hinweis)
+Im Repo existieren sehr viele Experiment‑Runs. Welche davon „am besten“ sind, hängt davon ab, ob du sofortige Verbuchung (Variante 1/2) oder Exit‑Settlement (Variante 3) nutzt. Da du explizit Variante 3 verwendest, ist der wichtigste Vergleich die `_result`‑Gruppe (Abschnitt 9.1). Falls du ein vollständiges Ranking über alle EXP_IDs für Variante 3 willst, kann es automatisiert aus `notebooks/results/final_two_stage/*_predictions.csv` + den passenden Configs rekonstruiert und als Tabelle in den Bericht aufgenommen werden.
+
+================================================================================
+10) DISKUSSION / INTERPRETATION (was bedeutet das?)
+================================================================================
+10.1 Label‑Definition dominiert alles
+- Strikte Labels (Monotonie + Endpunkt‑Treffer) erzeugen oft sehr wenige „move“‑Tage → extreme Klassenunbalance → instabile Modelle.
+- Tolerant + hit‑within‑horizon erzeugt deutlich mehr „move“‑Tage → andere Unbalance‑Situation (neutral kann Minderheit werden).
+→ Konsequenz: Metriken sind nur im Kontext der Label‑Logik sinnvoll interpretierbar.
+
+10.2 Metriken vs Profit
+- 3‑Klassen‑Macro‑F1 ist ein fairer ML‑Indikator, aber nicht direkt trading‑optimiert.
+- Profit hängt von Thresholds, Trade‑Frequenz und Kostenannahmen (TP/SL, Hebel) ab.
+→ Daher: cost‑basierte Threshold‑Suche + P&L‑Vergleiche wurden als Entscheidungshilfe ergänzt.
+
+10.3 News‑Features: Nutzen, aber mit Coverage‑Kosten
+- News können Metriken verbessern, reduzieren aber die Datenmenge (inner join) und erhöhen „Noisiness“.
+- Das Projekt zeigt: Mehr Features ≠ automatisch besserer Profit.
+
+10.4 Datenanbieter‑Bias („Daily Cut“)
+- Schon geringe Unterschiede im Daily‑Cut können Labels und Returns verändern.
+→ Das Projekt adressiert dies mit EODHD‑Vergleich und weekend filtering, aber ein Broker‑Cut wäre die nächste Stufe.
+
+================================================================================
+11) HERAUSFORDERUNGEN & LEARNINGS
+================================================================================
+H1: Label‑Design (größter Hebel)
+- Herausforderung: zwischen „zu seltene Trades“ und „zu viele Trades“ balancieren.
+- Lösung: Iterationen über strict → tolerant → hit‑within‑horizon → first‑hit‑wins.
+
+H2: Konflikte im Horizontfenster (Up & Down beide möglich)
+- Herausforderung: Ein Preisfenster kann beide Schwellen treffen.
+- Lösung: `first_hit_wins` als trading‑nahe Konfliktauflösung.
+
+H3: Zeitreihen‑Evaluation
+- Herausforderung: Random Split wäre Leakage.
+- Lösung: fixierter Teststart + chronologisches Train/Val.
+
+H4: News‑Coverage / Datenverfügbarkeit
+- Herausforderung: Merge reduziert Daten stark.
+- Learnings: price_only kann trotz weniger „Information“ überlegen sein, weil mehr Historie verfügbar ist.
+
+H5: Schwellenwerte / No‑Trade‑Zone
+- Herausforderung: Probability‑Thresholds bestimmen Trade‑Frequenz und Kostenprofil.
+- Lösung: separate Thresholds für Metriken vs Trading (`signal_threshold` vs `signal_threshold_trade`) + cost‑basierte Tuning‑Ansätze.
+
+H6: Reporting als Teil der Forschung
+- Herausforderung: viele Experimente → man verliert schnell Überblick.
+- Lösung: PDF‑Reports + auto‑generierte Timelines + Vergleichsskripte.
+
+================================================================================
+12) SCHLUSSFOLGERUNGEN
+================================================================================
+S1: Die Hauptleistung des Projekts ist nicht „ein einzelnes Modell“, sondern die reproduzierbare Experiment‑Pipeline inkl. Reporting/Audit‑Trail.
+S2: Zwei‑Stufen‑Modellierung passt sehr gut zur Trading‑Entscheidung (Trade/No‑Trade + Richtung).
+S3: Label‑Logik und Datenabdeckung sind die entscheidenden Faktoren für Stabilität und Profitabilität.
+S4: price_only ist im Projektkontext eine rationale Wahl, weil es mehr Trainingshistorie erlaubt und in der Tradesimulation robustere Resultate zeigte.
+
+================================================================================
+13) EMPFEHLUNGEN / NEXT STEPS
+================================================================================
+R1: Broker‑Cut reproduzieren (oder Broker‑OHLC verwenden), um Datenanbieter‑Bias zu minimieren.
+R2: Realistischere Kostenmodelle (Spread, Slippage, Kommissionen) in Tradesimulation integrieren.
+R3: Walk‑Forward‑Evaluation (rolling windows) statt ein einzelner Test‑Cut.
+R4: Feature‑Selektion/SHAP‑Analysen für Interpretierbarkeit und Robustheit.
+R5: Einheitliche Pipeline‑CLI (v2‑Ansatz) vollständig versionieren und als „single source of truth“ nutzen.
+
+================================================================================
+14) REFERENZEN / BIBLIOGRAPHIE (für Folien ausreichend)
+================================================================================
+- XGBoost: Chen & Guestrin (2016), „XGBoost: A Scalable Tree Boosting System“
+- scikit-learn Dokumentation (Metriken, Confusion Matrix, Reports)
+- yfinance (Yahoo Finance API Wrapper)
+- EODHD (News/FX Datenquelle; API‑Nutzung abhängig von Token)
+- pandas / numpy Dokumentation (Time series, rolling features)
+
+================================================================================
+15) ANHÄNGE
+================================================================================
+
+ANHANG A – Quickstart (Befehle/Prozeduren)
+1) Environment:
+   - `python3 -m venv .venv`
+   - `source .venv/bin/activate`
+   - `pip install -r requirements.txt`
+
+2) FX‑Daten (Yahoo) laden:
+   - `bash scripts/fetch_finance.sh`
+
+3) News (optional):
+   - `python3 -m src.data.fetch_eodhd_news --token "$EODHD_TOKEN" --symbol "EURUSD.FOREX" --start "YYYY-MM-DD" --end "YYYY-MM-DD"`
+   - `python3 -m src.data.prepare_eodhd_news`
+
+4) Labels erzeugen (Beispiel):
+   - `python3 -m src.data.label_eurusd --exp-id hp_long_final_yahoo`  (Parameter primär über Notebooks/Configs gesteuert)
+
+5) Trainingsdaten erzeugen:
+   - über Notebook `notebooks/final_two_stage/1_data_prep_final.ipynb` (empfohlen)
+   - oder via `src/data/build_training_set.py` (je nach Feature‑Mode)
+
+6) Training/Evaluation/Reporting:
+   - Notebook‑Workflow: `notebooks/final_two_stage/2_train_final.ipynb` und `notebooks/final_two_stage/3_eval_final.ipynb`
+   - Report‑Generator: `python3 -m scripts.generate_two_stage_report` (Parameter/EXP_ID abhängig)
+   - P&L Vergleich (Variante 3 / Exit‑Settlement): `python3 -m scripts.compare_experiments_pnl --exp-a hp_long_result --exp-b hv_result --strategy B --leverage 20 --variant tp_only_exit --output <pfad>.pdf`
+
+ANHANG B – Feature‑Liste (Fokus: hp_long_final_yahoo)
+Quelle: `notebooks/results/final_two_stage/two_stage_final__hp_long_final_yahoo.json` → `config.feature_cols` (21 Features)
+- intraday_range_pct, upper_shadow, lower_shadow
+- price_close_ret_1d, price_close_ret_5d, price_range_pct_5d_std, price_body_pct_5d_mean
+- price_close_ret_30d, price_range_pct_30d_std, price_body_pct_30d_mean
+- month, quarter
+- cal_dow, cal_day_of_month, cal_is_monday, cal_is_friday, cal_is_month_start, cal_is_month_end
+- hol_is_us_federal_holiday, hol_is_day_before_us_federal_holiday, hol_is_day_after_us_federal_holiday
+
+ANHANG C – Commit‑Changelog (alle Commits, chronologisch, inkl. Inhalt)
+Autor (Git shortlog): Jerycodes (43 Commits)
+
+Hinweis: Hashes sind Kurzform; vollständige Details pro Commit via `git show <hash>`.
+
+2025-11-12
+- 15a0735: Initial commit (LICENSE, README)
+- ccda60a: requirements.txt für reproduzierbares Setup
+- 74e3e72: .gitignore (venv/data/editor)
+
+2025-11-13
+- 2a702d8: Daten‑Download Yahoo (chunked) + EURUSD Config (`config/symbols.yaml`, `src/data/load_finance.py`, `scripts/fetch_finance.sh`)
+- 7889019: Pfad‑Helper `src/utils/io.py`
+- 4a6b708: Erstes EURUSD‑Labeling `src/data/label_eurusd.py`
+- 7475f51: Label‑Snapshot unter `data/processed/fx/eurusd_labels.csv` + .gitignore Update
+
+2025-11-15
+- 3f2d88f: EODHD News Downloader `src/data/fetch_eodhd_news.py`
+- a0f9a9d: News‑Aggregation + Dataset Merge (`src/data/prepare_eodhd_news.py`, `src/data/build_training_set.py`)
+- 571168d: Erste Two‑Stage Notebooks + Training Code (`src/models/train_xgboost_two_stage.py`) + EDA Notebook
+- c90fb09: EXP_ID‑basierte Notebooks (Data Prep/Train/Results) + Label/Dataset‑Anpassungen
+- 8842c8a: v1 Experiment + Pipeline‑Doku (`docs/README_data_pipeline.md`, `docs/data_pipeline_eurusd_xgboost.md`) + `src/models/train_xgboost.py`
+
+2025-11-16
+- e26dde0: PDF‑Report Generator `scripts/generate_two_stage_report.py` + erste Report‑Artefakte
+
+2025-11-17
+- 751dea1: Feature‑Engineering Modul `src/features/eurusd_features.py` + Training/Dataset Updates
+
+2025-11-18
+- 54bdb8b: EDA/Tooling für Label‑Analyse (Notebook‑Erweiterungen)
+- a674c79: v2/v3 Experimente (neue Resultate + Notebook Updates)
+- 6630eaa: „tolerant“ Labeling: `max_adverse_move_pct` in `src/data/label_eurusd.py`
+- 08bb245: EDA: Label Coverage & Path Analysis
+- 256f8e3: v4/v5 tolerant runs + Tuning (Notebooks/Results)
+
+2025-11-19
+- 79ab367: v6–v8 Signal‑Varianten (max_depth, n_estimators, spw, …) + Reset Model Config
+- db8fb32: Up/Down‑only Visualizations + Threshold‑Tuning
+- d62018a: s1 Notebooks für Up/Down‑only Analyse
+- f0e9a46: 30‑Tage Preis‑History Features (z.B. price_close_ret_30d)
+
+2025-11-21
+- befa92b: Snapshot s‑Experiments + Reports
+- dd75efb: Final Two‑Stage Notebooks (Data‑Prep/Train/Eval) unter `notebooks/final_two_stage/*`
+
+2025-11-22
+- 859a5a1: Final‑Two‑Stage PDF Reporting + weitere Artefakte
+- 5130877: Snapshot final pipeline für v0–v4
+
+2025-11-28
+- f49c400: Finalisierung final_two_stage Pipeline + nv‑Experimente
+- 099b7a6: nv29–nv36 Experimente + Label‑Updates
+- 7f85d93: Tradesimulation + Cost Matrices + hv‑Serie; Label‑Erweiterung und große Report‑Erweiterungen
+
+2025-11-29
+- c27a9c3: hv5 Reports + Trade‑Simulation Doku Update
+- 86c3128: Checkpoint vor cost‑based Tuning (Final Notebooks)
+
+2025-11-30
+- b033083: cost‑based direction thresholds + hv5_h4... Ergebnisse
+- ee1ebdf: hv5_h4... Notebook‑Runs (Ergebnisartefakte)
+- 7f2c260: hp1 price‑only Baseline + Vergleich zu hv5
+- b851d53: hp_long Runs + cost‑based signal threshold (News‑Pipeline bleibt intakt)
+- f77ea1b: hp_long price‑only baseline + Cleanup
+- 88e5fd0: hp_long Result Metrics + Reports
+
+2025-12-12
+- 46f1cea: EODHD FX Pipeline + Vergleichstools (Notebooks + Scripts + viele Ergebnisartefakte)
+- 265f8af: Update eurusd_labels Snapshot
+
+2025-12-15
+- 46c107f: Große Doku‑Erweiterung + Timelines + P&L‑Vergleichsskript
+
+2025-12-16
+- a83dea3: Labeling: first‑hit‑wins + weekday filter; Report‑Varianten; Updates in Notebooks/Report‑Generator
+
+2025-12-18
+- e78fb5e: chore: Update notebooks/results und report tools
+
+ANHANG D – Roh‑Git‑Historie (Name‑Status; maschinenlesbar)
+Hinweis: Diese Liste ist der „Audit‑Trail“ (welche Dateien pro Commit verändert wurden).
+Sie wurde aus `git log --reverse --pretty=format:'COMMIT %H%nDate: %ad%nAuthor: %an%nSubject: %s%n' --name-status` rekonstruiert.
+
+[BEGIN GIT LOG NAME-STATUS]
+COMMIT 15a073515856d276bc01521733a1a3609ab3ebf1
+Date: 2025-11-12
+Author: Jerycodes
+Subject: Initial commit
+
+A	LICENSE
+A	README.md
+
+COMMIT ccda60a79715be0bbdb1d167265da32ba7e6ccf2
+Date: 2025-11-12
+Author: Jerycodes
+Subject: docs: add requirements for reproducible setup
+
+A	requirements.txt
+
+COMMIT 74e3e7294a16b30a3b56d0c2c1469117bdfabdd6
+Date: 2025-11-12
+Author: Jerycodes
+Subject: chore: add gitignore for venv, data and editor files
+
+A	.gitignore
+
+COMMIT 2a702d889f2bc0c21c3bed2baff779fac85f21e3
+Date: 2025-11-13
+Author: Jerycodes
+Subject: feat: support chunked download and add EURUSD config
+
+M	.gitignore
+A	config/symbols.yaml
+A	scripts/fetch_finance.sh
+A	src/data/load_finance.py
+
+COMMIT 7889019e5a3c01f270bd1a7e7818ca763131877e
+Date: 2025-11-13
+Author: Jerycodes
+Subject: feat: add data directory helpers
+
+A	src/utils/io.py
+
+COMMIT 4a6b7084a38ec88aa7dbe8a23a9d6abef64348cd
+Date: 2025-11-13
+Author: Jerycodes
+Subject: feat: add EURUSD labeling script
+
+A	src/data/label_eurusd.py
+
+COMMIT 7475f5112f42bc3ab6c49fdff5605450b8f90ba7
+Date: 2025-11-13
+Author: Jerycodes
+Subject: feat: add EURUSD labeling script
+
+M	.gitignore
+A	data/processed/fx/eurusd_labels.csv
+
+COMMIT 3f2d88f85f5bdfb523be679902b333acc98355f6
+Date: 2025-11-15
+Author: Jerycodes
+Subject: Add EODHD news downloader for EURUSD
+
+A	src/data/fetch_eodhd_news.py
+
+COMMIT a0f9a9d4f28a8bb796999aea3347545a784247bc
+Date: 2025-11-15
+Author: Jerycodes
+Subject: feat(data): add EODHD news feature builder and training dataset merge
+
+A	src/data/build_training_set.py
+A	src/data/prepare_eodhd_news.py
+
+COMMIT 571168d09452a199c83f739bf7278d5c0427133e
+Date: 2025-11-15
+Author: Jerycodes
+Subject: feat(data): update EURUSD labels and two-stage model notebooks
+
+M	data/processed/fx/eurusd_labels.csv
+A	notebooks/eda_eurusd_news.ipynb
+A	notebooks/notebooks/model_xgboost_two_stage.ipynb
+A	notebooks/results/two_stage_v0_h4_thr1pct_strict.json
+M	requirements.txt
+M	src/data/build_training_set.py
+M	src/data/label_eurusd.py
+A	src/models/train_xgboost_two_stage.py
+
+COMMIT c90fb09812cf912bfc4a54bf819506b8fb1ebf22
+Date: 2025-11-15
+Author: Jerycodes
+Subject: chore(experiments): add EXP_ID-based data prep, training and results notebooks
+
+M	data/processed/fx/eurusd_labels.csv
+A	notebooks/1_data_prep_xgboost_two_stage.ipynb
+A	notebooks/2_train_xgboost_two_stage.ipynb
+A	notebooks/3_results_xgboost_two_stage.ipynb
+A	notebooks/z_old_model_xgboost_two_stage.ipynb
+M	src/data/build_training_set.py
+M	src/data/label_eurusd.py
+
+COMMIT 8842c8a93aafeb9f7f3e8e5339c9fbfe624aa0a1
+Date: 2025-11-15
+Author: Jerycodes
+Subject: feat(models): add v1 two-stage experiment and data pipeline docs
+
+A	docs/README_data_pipeline.md
+A	docs/data_pipeline_eurusd_xgboost.md
+A	docs/image-1.png
+A	docs/image-2.png
+A	docs/image-3.png
+A	docs/image.png
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/3_results_xgboost_two_stage.ipynb
+D	notebooks/notebooks/model_xgboost_two_stage.ipynb
+A	notebooks/results/two_stage__v1_h4_thr0p5pct_strict.json
+A	notebooks/results/two_stage__v1_h4_thr0p5pct_strict_metrics.csv
+A	results/two_stage_v0_h4_thr1pct_strict.json
+M	src/data/build_training_set.py
+A	src/models/train_xgboost.py
+
+COMMIT e26dde033c647cfbc8b9900a0beeed451e62e2b5
+Date: 2025-11-16
+Author: Jerycodes
+Subject: feat(report): add two-stage experiment PDF generator and v1 results
+
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/3_results_xgboost_two_stage.ipynb
+M	notebooks/results/two_stage__v1_h4_thr0p5pct_strict.json
+A	notebooks/results/two_stage__v1_h4_thr0p5pct_strict_report.pdf
+A	scripts/generate_two_stage_report.py
+
+COMMIT 751dea1e30b7bb35207e0e2e8e1553c450595444
+Date: 2025-11-17
+Author: Jerycodes
+Subject: feat(data): add engineered EURUSD features and extend two-stage training set
+
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	src/data/build_training_set.py
+A	src/features/__init__.py
+A	src/features/eurusd_features.py
+M	src/models/train_xgboost_two_stage.py
+
+COMMIT 54bdb8b82f5a2062cbe14ddd4d9150ba88ab9918
+Date: 2025-11-18
+Author: Jerycodes
+Subject: feat(data): add engineered EURUSD features and label EDA tooling
+
+M	notebooks/eda_eurusd_news.ipynb
+
+COMMIT a674c79a4acd2a2dc7d6cfc16f0037db7d8173d0
+Date: 2025-11-18
+Author: Jerycodes
+Subject: chore(experiments): add v2 and v3 two-stage experiments
+
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/3_results_xgboost_two_stage.ipynb
+A	notebooks/results/two_stage__v2_h4_thr0p5pct_strict_newfeat.json
+A	notebooks/results/two_stage__v2_h4_thr0p5pct_strict_newfeat_metrics.csv
+A	notebooks/results/two_stage__v2_h4_thr0p5pct_strict_newfeat_report.pdf
+A	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed.json
+A	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed_metrics.csv
+A	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed_report.pdf
+
+COMMIT 6630eaaecc62789a0a87f79de0cd432bd21acdf2
+Date: 2025-11-18
+Author: Jerycodes
+Subject: feat(data): add tolerant adverse-move filter for EURUSD labels
+
+M	src/data/label_eurusd.py
+
+COMMIT 08bb245b8d71ebefeb380d42ba8b3819cf0fd3a6
+Date: 2025-11-18
+Author: Jerycodes
+Subject: chore(eda): add label coverage and path analysis
+
+M	notebooks/eda_eurusd_news.ipynb
+
+COMMIT 256f8e3174717d1263d8a01c6bce10cf0a3cbba2
+Date: 2025-11-18
+Author: Jerycodes
+Subject: chore(experiments): add v4/v5 tolerant two-stage runs and tuning
+
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/eda_eurusd_news.ipynb
+A	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct.json
+A	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct_metrics.csv
+A	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+A	notebooks/results/two_stage__v5_h4_thr0p5pct_tolerant0p3pct_spw1p0.json
+M	src/models/train_xgboost_two_stage.py
+
+COMMIT 79ab36733c9b35ed4b1e430a34270d190326fd84
+Date: 2025-11-19
+Author: Jerycodes
+Subject: chore(experiments): add v6–v8 two-stage signal variants and reset model config
+
+M	notebooks/2_train_xgboost_two_stage.ipynb
+A	notebooks/results/two_stage__v6_h4_thr0p5pct_tolerant0p3pct_sigdepth2.json
+A	notebooks/results/two_stage__v6_h4_thr0p5pct_tolerant0p3pct_sigdepth2_metrics.csv
+A	notebooks/results/two_stage__v7_h4_thr0p5pct_tolerant0p3pct_sigdepth4_n600.json
+A	notebooks/results/two_stage__v7_h4_thr0p5pct_tolerant0p3pct_sigdepth4_n600_metrics.csv
+A	notebooks/results/two_stage__v8_h4_thr0p5pct_tolerant0p3pct_sig_easytrain.json
+A	notebooks/results/two_stage__v8_h4_thr0p5pct_tolerant0p3pct_sig_easytrain_metrics.csv
+M	src/models/train_xgboost_two_stage.py
+
+COMMIT db8fb328ac25c97d0511decf30cea45bd3be8156
+Date: 2025-11-19
+Author: Jerycodes
+Subject: Add up/down-only FN/FP visualizations and threshold tuning
+
+A	notebooks/2a_train_xgboost_up_only.ipynb
+A	notebooks/2b_train_xgboost_down_only.ipynb
+A	notebooks/results/down_only__s1_h4_thr0p5pct_tol0p3.json
+A	notebooks/results/down_only__s1_h4_thr0p5pct_tol0p3_metrics.csv
+A	notebooks/results/down_only__v4_h4_thr0p5pct_tolerant0p3pct.json
+A	notebooks/results/down_only__v4_h4_thr0p5pct_tolerant0p3pct_metrics.csv
+A	notebooks/results/up_only__s1_h4_thr0p5pct_tol0p3.json
+A	notebooks/results/up_only__s1_h4_thr0p5pct_tol0p3_metrics.csv
+A	notebooks/results/up_only__v4_h4_thr0p5pct_tolerant0p3pct.json
+A	notebooks/results/up_only__v4_h4_thr0p5pct_tolerant0p3pct_metrics.csv
+A	src/models/tune_xgboost_thresholds.py
+
+COMMIT d62018aa62e05fb8039701d9990fdf16feddaa06
+Date: 2025-11-19
+Author: Jerycodes
+Subject: chore(experiments): update s1 notebooks for up/down-only analysis
+
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/2a_train_xgboost_up_only.ipynb
+M	notebooks/2b_train_xgboost_down_only.ipynb
+M	notebooks/3_results_xgboost_two_stage.ipynb
+M	notebooks/eda_eurusd_news.ipynb
+
+COMMIT f0e9a4606ec7b2d8397662c5f35f2027ec941528
+Date: 2025-11-19
+Author: Jerycodes
+Subject: feat(data): add 30d price-history features for EURUSD
+
+M	src/data/build_training_set.py
+M	src/features/eurusd_features.py
+M	src/models/train_xgboost_two_stage.py
+M	src/models/tune_xgboost_thresholds.py
+
+COMMIT befa92b0a367a63c05a7e9187cde9221510d5b0d
+Date: 2025-11-21
+Author: Jerycodes
+Subject: chore(experiments): snapshot s-experiments and reports
+
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/2a_train_xgboost_up_only.ipynb
+M	notebooks/2b_train_xgboost_down_only.ipynb
+M	notebooks/3_results_xgboost_two_stage.ipynb
+M	notebooks/eda_eurusd_news.ipynb
+A	notebooks/results/down_only__s2_h4_thr0p5pct_tol0p3.json
+A	notebooks/results/down_only__s2_h4_thr0p5pct_tol0p3_metrics.csv
+A	notebooks/results/down_only__s3b_h4_thr0p3pct_tol0p3_30dfeat.json
+A	notebooks/results/down_only__s3b_h4_thr0p3pct_tol0p3_30dfeat_metrics.csv
+A	notebooks/results/down_only__v10_h4_thr0p3pct_tol0p3_30dfeat.json
+A	notebooks/results/down_only__v10_h4_thr0p3pct_tol0p3_30dfeat_metrics.csv
+A	notebooks/results/two_stage__v10_h4_thr0p3pct_tol0p3_30dfeat.json
+A	notebooks/results/two_stage__v10_h4_thr0p3pct_tol0p3_30dfeat_metrics.csv
+M	notebooks/results/two_stage__v1_h4_thr0p5pct_strict_report.pdf
+M	notebooks/results/two_stage__v2_h4_thr0p5pct_strict_newfeat_report.pdf
+M	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed_report.pdf
+M	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+A	notebooks/results/two_stage__v5_h4_thr0p5pct_tolerant0p3pct_spw1p0_report.pdf
+A	notebooks/results/two_stage__v6_h4_thr0p5pct_tolerant0p3pct_sigdepth2_report.pdf
+A	notebooks/results/two_stage__v7_h4_thr0p5pct_tolerant0p3pct_sigdepth4_n600_report.pdf
+A	notebooks/results/two_stage__v8_h4_thr0p5pct_tolerant0p3pct_sig_easytrain_report.pdf
+A	notebooks/results/two_stage__v9_h4_thr0p5pct_tol0p3_30dfeat.json
+A	notebooks/results/two_stage__v9_h4_thr0p5pct_tol0p3_30dfeat_metrics.csv
+A	notebooks/results/two_stage__v9_h4_thr0p5pct_tol0p3_30dfeat_report.pdf
+A	notebooks/results/up_only__s2_h4_thr0p5pct_tol0p3.json
+A	notebooks/results/up_only__s2_h4_thr0p5pct_tol0p3_metrics.csv
+A	notebooks/results/up_only__s3a_h4_thr0p3pct_tol0p3_30dfeat.json
+A	notebooks/results/up_only__s3a_h4_thr0p3pct_tol0p3_30dfeat_metrics.csv
+A	notebooks/results/up_only__v10_h4_thr0p3pct_tol0p3_30dfeat.json
+A	notebooks/results/up_only__v10_h4_thr0p3pct_tol0p3_30dfeat_metrics.csv
+A	notebooks/results/updown__s1_h4_thr0p5pct_tol0p3_report.pdf
+A	notebooks/results/updown__s2_h4_thr0p5pct_tol0p3_report.pdf
+M	scripts/generate_two_stage_report.py
+A	scripts/generate_updown_report.py
+A	vertex_ai/test.py
+
+COMMIT dd75efb3e88cb3df751dacc9d160c0513b513101
+Date: 2025-11-21
+Author: Jerycodes
+Subject: chore(notebooks): add final two-stage data-prep/train/eval notebooks
+
+A	notebooks/final_two_stage/1_data_prep_final.ipynb
+A	notebooks/final_two_stage/2_train_final.ipynb
+A	notebooks/final_two_stage/3_eval_final.ipynb
+
+COMMIT 859a5a1fccfc945fb78fbc1c814fdbc7d7b1f3e2
+Date: 2025-11-22
+Author: Jerycodes
+Subject: feat(report): add final two-stage notebooks and PDF reporting
+
+M	notebooks/1_data_prep_xgboost_two_stage.ipynb
+M	notebooks/2_train_xgboost_two_stage.ipynb
+M	notebooks/2a_train_xgboost_up_only.ipynb
+M	notebooks/2b_train_xgboost_down_only.ipynb
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct.json
+A	notebooks/results/final_two_stage/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct.json
+A	notebooks/results/final_two_stage/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct.json
+A	notebooks/results/final_two_stage/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct.json
+A	notebooks/results/final_two_stage/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__v0_h4_thr1pct_strict.json
+A	notebooks/results/final_two_stage/two_stage_final__v0_h4_thr1pct_strict_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__v0_h4_thr1pct_strict_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__v0_h4_thr1pct_strict_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__v1_h4_thr0p5pct_strict.json
+A	notebooks/results/final_two_stage/two_stage_final__v1_h4_thr0p5pct_strict_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__v1_h4_thr0p5pct_strict_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__v1_h4_thr0p5pct_strict_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__v3_h4_thr0p3pct_relaxed.json
+A	notebooks/results/final_two_stage/two_stage_final__v3_h4_thr0p3pct_relaxed_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__v3_h4_thr0p3pct_relaxed_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__v3_h4_thr0p3pct_relaxed_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct.json
+A	notebooks/results/final_two_stage/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+A	notebooks/results/two_stage__v0_h4_thr1pct_strict.json
+M	notebooks/results/two_stage__v1_h4_thr0p5pct_strict.json
+M	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed.json
+M	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct.json
+M	scripts/generate_two_stage_report.py
+
+COMMIT 5130877c2b7d65525d85a38f174109d6a61af24f
+Date: 2025-11-22
+Author: Jerycodes
+Subject: chore(experiments): snapshot final two-stage pipeline for v0–v4
+
+M	data/processed/fx/eurusd_labels.csv
+
+COMMIT f49c40095b97e64d0e0144a07b6dd293bfa5a4d8
+Date: 2025-11-28
+Author: Jerycodes
+Subject: Finalize final_two_stage pipeline and nv experiments
+
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/final_two_stage/data/processed/experiments/v0_h4_thr1pct_strict_config.json
+A	notebooks/results/final_two_stage/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_tolerant_p_pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_tolerant_p_pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_tolerant_p_pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p_report.pdf
+A	notebooks/results/two_stage__nv10_h4_thr0p_55pct_tolerant0p1pct_6p.json
+A	notebooks/results/two_stage__nv11_h4_thr0p_4pct_tolerant0p1pct_6p.json
+A	notebooks/results/two_stage__nv12_h4_thr0p_3pct_tolerant0p1pct_6p.json
+A	notebooks/results/two_stage__nv13_h4_thr0p_3pct_tolerant0p1pct_4p.json
+A	notebooks/results/two_stage__nv14_h4_thr0p_3pct_tolerant0p1pct_51p.json
+A	notebooks/results/two_stage__nv15_h4_thr0p_3pct_tolerant0p1pct_5p.json
+A	notebooks/results/two_stage__nv16_h4_thr0p_3pct_tolerant0p1pct_5p.json
+A	notebooks/results/two_stage__nv17_h4_thr0p_3pct_tolerant0p1pct_6p.json
+A	notebooks/results/two_stage__nv18_h4_thr0p_3pct_tolerant0p1pct_7p.json
+A	notebooks/results/two_stage__nv19_h4_thr0p_3pct_tolerant0p1pct_55p.json
+A	notebooks/results/two_stage__nv1_h4_thr0p7pct_tolerant0p3pct.json
+A	notebooks/results/two_stage__nv20_h4_thr0p_6pct_tolerant0p1pct_55p.json
+A	notebooks/results/two_stage__nv21_h4_thr0p_6pct_tolerant0p6pct_55p.json
+A	notebooks/results/two_stage__nv22_h4_thr0p_3pct_tolerant_p_pct_55p.json
+A	notebooks/results/two_stage__nv23_h3_thr0p_3pct_tolerant_p_pct_55p.json
+A	notebooks/results/two_stage__nv24_h6_thr0p_6pct_tolerant_p_pct_55p.json
+A	notebooks/results/two_stage__nv25_h6_thr1p_0pct_tolerant_p_pct_55p.json
+A	notebooks/results/two_stage__nv26_h6_thr1p_0pct_strict_p_pct_55p.json
+A	notebooks/results/two_stage__nv26_h6_thr1p_0pct_tolerant_p_pct_55p.json
+A	notebooks/results/two_stage__nv27_h6_thr1p_0pct_tolerant_p_pct_5p.json
+A	notebooks/results/two_stage__nv28_h6_thr1p_5pct_tolerant_p_pct_5p.json
+A	notebooks/results/two_stage__nv2_h4_thr0p_8pct_tolerant0p4pct.json
+A	notebooks/results/two_stage__nv3_h4_thr0p_65pct_tolerant0p35pct.json
+A	notebooks/results/two_stage__nv4_h4_thr0p_65pct_tolerant0p15pct.json
+A	notebooks/results/two_stage__nv5_h4_thr0p_65pct_tolerant0p15pct_7p.json
+A	notebooks/results/two_stage__nv6_h4_thr0p_6pct_tolerant0p15pct_6p.json
+A	notebooks/results/two_stage__nv7_h4_thr0p_6pct_tolerant0p2pct_7p.json
+A	notebooks/results/two_stage__nv8_h4_thr0p_6pct_tolerant0p2pct_6p.json
+A	notebooks/results/two_stage__nv9_h4_thr0p_55pct_tolerant0p2pct_6p.json
+M	scripts/generate_two_stage_report.py
+
+COMMIT 099b7a66e488f37135ba4c70659652f4ab21beb6
+Date: 2025-11-28
+Author: Jerycodes
+Subject: Add nv29-nv36 experiments and updated labels
+
+M	data/processed/fx/eurusd_labels.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/final_two_stage/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p_report.pdf
+A	notebooks/results/two_stage__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/two_stage__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/two_stage__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p.json
+A	notebooks/results/two_stage__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p.json
+A	notebooks/results/two_stage__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/two_stage__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/two_stage__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p.json
+A	notebooks/results/two_stage__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p.json
+
+COMMIT 7f85d9320b97a13dd78fc99e09597db76d43be81
+Date: 2025-11-28
+Author: Jerycodes
+Subject: Add trade simulation, cost matrices, and hv-series experiments
+
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hv1_h4_thr0p3pct_hit.json
+A	notebooks/results/final_two_stage/two_stage_final__hv1_h4_thr0p3pct_hit_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv1_h4_thr0p3pct_hit_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv1_h4_thr0p3pct_hit_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv2_h4_thr0p4pct_hit.json
+A	notebooks/results/final_two_stage/two_stage_final__hv2_h4_thr0p4pct_hit_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv2_h4_thr0p4pct_hit_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv2_h4_thr0p4pct_hit_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv3_h4_thr0p5pct_hit.json
+A	notebooks/results/final_two_stage/two_stage_final__hv3_h4_thr0p5pct_hit_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv3_h4_thr0p5pct_hit_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv3_h4_thr0p5pct_hit_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv4_h4_thr0p4pct_hit.json
+A	notebooks/results/final_two_stage/two_stage_final__hv4_h4_thr0p4pct_hit_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv4_h4_thr0p4pct_hit_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv4_h4_thr0p4pct_hit_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_report.pdf
+A	notebooks/results/two_stage__hv1_h4_thr0p3pct_hit.json
+A	notebooks/results/two_stage__hv2_h4_thr0p4pct_hit.json
+A	notebooks/results/two_stage__hv3_h4_thr0p5pct_hit.json
+A	notebooks/results/two_stage__hv4_h4_thr0p4pct_hit.json
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit.json
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_2.json
+M	scripts/generate_two_stage_report.py
+M	src/data/label_eurusd.py
+
+COMMIT c27a9c309a33cbcae5712043090a449090b36a8c
+Date: 2025-11-29
+Author: Jerycodes
+Subject: Update hv5 reports and trade simulation docs
+
+M	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_3.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_3_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_3_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_3_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_4.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_4_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_4_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_4_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_5.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_5_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_5_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_5_report.pdf
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_3.json
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_4.json
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_5.json
+M	scripts/generate_two_stage_report.py
+
+COMMIT 86c31289307656ff04b7fee32f920c6724578276
+Date: 2025-11-29
+Author: Jerycodes
+Subject: Checkpoint final_two_stage notebooks before cost-based tuning
+
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+
+COMMIT b0330839649553e99656435d21e1ec500466c56f
+Date: 2025-11-30
+Author: Jerycodes
+Subject: Add cost-based direction thresholds and hv5_h4_thr0p4pct_hit_6 results
+
+M	notebooks/final_two_stage/2_train_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_report.pdf
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_6.json
+M	scripts/generate_two_stage_report.py
+
+COMMIT ee1ebdf122c5d3e6aa03e75f77b64cb492a24311
+Date: 2025-11-30
+Author: Jerycodes
+Subject: Run hv5_h4_thr0p4pct_hit_6 notebooks
+
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+
+COMMIT 7f2c260fa1c99a88821b7d04b0b58ee8065eaf34
+Date: 2025-11-30
+Author: Jerycodes
+Subject: Add hp1 price-only baseline and compare with hv5
+
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hp1_h4_thr0p4pct_hit_1.json
+A	notebooks/results/final_two_stage/two_stage_final__hp1_h4_thr0p4pct_hit_1_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp1_h4_thr0p4pct_hit_1_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp1_h4_thr0p4pct_hit_1_report.pdf
+A	notebooks/results/two_stage__hp1_h4_thr0p4pct_hit_1.json
+M	scripts/generate_two_stage_report.py
+
+COMMIT b851d534a9cb707714838245f1fdfa08b5132505
+Date: 2025-11-30
+Author: Jerycodes
+Subject: Add hp_long runs and cost-based signal threshold; keep news pipeline intact
+
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hpL1_h4_thr0p4pct_hit_1.json
+A	notebooks/results/final_two_stage/two_stage_final__hpL1_h4_thr0p4pct_hit_1_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hpL1_h4_thr0p4pct_hit_1_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hpL1_h4_thr0p4pct_hit_1_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long1_h4_thr0p4pct_hit_1.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long1_h4_thr0p4pct_hit_1_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long1_h4_thr0p4pct_hit_1_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long1_h4_thr0p4pct_hit_1_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_2.json
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_2_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_2_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_2_report.pdf
+A	notebooks/results/two_stage__hpL1_h4_thr0p4pct_hit_1.json
+A	notebooks/results/two_stage__hp_long1_h4_thr0p4pct_hit_1.json
+A	notebooks/results/two_stage__hp_long_h4_thr0p4pct_hit_1.json
+A	notebooks/results/two_stage__hp_long_h4_thr0p4pct_hit_1_2.json
+A	notebooks/results/two_stage__hv5_h4_thr0p4pct_hit_6_2.json
+M	scripts/generate_two_stage_report.py
+M	src/data/build_training_set.py
+
+COMMIT f77ea1bcafccea0ab78b6d420e45da7ba6ce214d
+Date: 2025-11-30
+Author: Jerycodes
+Subject: hp_long price-only baseline + cleanup
+
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4.json
+A	notebooks/results/two_stage__hp_long_h4_thr0p4pct_hit_1_3.json
+A	notebooks/results/two_stage__hp_long_h4_thr0p4pct_hit_1_4.json
+M	src/data/build_training_set.py
+M	src/features/eurusd_features.py
+
+COMMIT 88e5fd0ddc91a99274867a23316bf34e1924cea5
+Date: 2025-11-30
+Author: Jerycodes
+Subject: Add hp_long result metrics and reports
+
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4_report.pdf
+
+COMMIT 46f1cea45a98366d6a608eb8b288523ee9a194f2
+Date: 2025-12-12
+Author: Jerycodes
+Subject: Add EODHD FX pipeline and comparison tools
+
+A	notebooks/eodhd_two_stage/1_data_prep_eodhd.ipynb
+A	notebooks/eodhd_two_stage/2_train_eodhd.ipynb
+A	notebooks/eodhd_two_stage/3_eval_eodhd.ipynb
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5_report.pdf
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4.json
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4_metrics.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4_predictions.csv
+A	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4_report.pdf
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p3pct_hit_7.json
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p4pct_hit_1.json
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p4pct_hit_2.json
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p4pct_hit_8.json
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p5pct_hit_3.json
+A	notebooks/results/two_stage__hp_long_eod_h4_thr0p6pct_hit_6.json
+A	notebooks/results/two_stage__hp_long_eod_h5_thr0p4pct_hit_5.json
+A	notebooks/results/two_stage__hp_long_eod_h5_thr0p5pct_hit_4.json
+M	requirements.txt
+A	scripts/download_eodhd_fx.py
+A	scripts/eval_yahoo_model_on_eod.py
+M	src/data/label_eurusd.py
+
+COMMIT 265f8af41fa3d716aa36e318e6b0b170e1fe5bf9
+Date: 2025-12-12
+Author: Jerycodes
+Subject: Update latest eurusd_labels snapshot
+
+M	data/processed/fx/eurusd_labels.csv
+
+COMMIT 46c107fef17652cb72eeff6364e94a692fda17eb
+Date: 2025-12-15
+Author: Jerycodes
+Subject: feat(report): expand docs and add P&L comparison script
+
+A	docs/experiment_timeline.csv
+A	docs/experiment_timeline.md
+A	docs/full_report_hp_long_final_yahoo.md
+A	docs/presentation_report_hp_long_final_yahoo.md
+A	docs/two_stage_timeline.csv
+A	docs/two_stage_timeline.md
+A	scripts/compare_experiments_pnl.py
+M	scripts/generate_two_stage_report.py
+
+COMMIT a83dea3654351dd72cbf60e02dd614fb06a686ba
+Date: 2025-12-16
+Author: Jerycodes
+Subject: feat(labeling): first-hit + weekday filter; report variants
+
+M	notebooks/eodhd_two_stage/1_data_prep_eodhd.ipynb
+M	notebooks/eodhd_two_stage/2_train_eodhd.ipynb
+M	notebooks/eodhd_two_stage/3_eval_eodhd.ipynb
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+M	scripts/compare_experiments_pnl.py
+M	scripts/generate_two_stage_report.py
+M	src/data/label_eurusd.py
+
+COMMIT e78fb5e66c8e122466ff9f6763b7164310126d90
+Date: 2025-12-18
+Author: Jerycodes
+Subject: chore: update notebooks/results and report tools
+
+A	CHAT_JOURNAL.md
+M	README.md
+M	config/symbols.yaml
+M	data/processed/fx/eurusd_labels.csv
+M	notebooks/eodhd_two_stage/1_data_prep_eodhd.ipynb
+M	notebooks/eodhd_two_stage/2_train_eodhd.ipynb
+M	notebooks/eodhd_two_stage/3_eval_eodhd.ipynb
+M	notebooks/final_two_stage/1_data_prep_final.ipynb
+M	notebooks/final_two_stage/2_train_final.ipynb
+M	notebooks/final_two_stage/3_eval_final.ipynb
+D	notebooks/results/final_two_stage/two_stage_final__hp1_h4_thr0p4pct_hit_1_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hpL1_h4_thr0p4pct_hit_1_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long1_h4_thr0p4pct_hit_1_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p3pct_hit_7_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_1_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_2_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p4pct_hit_8_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p5pct_hit_3_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h4_thr0p6pct_hit_6_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p4pct_hit_5_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_eod_h5_thr0p5pct_hit_4_report.pdf
+M	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_2_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_3_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_4_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hp_long_h4_thr0p4pct_hit_1_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv1_h4_thr0p3pct_hit_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv2_h4_thr0p4pct_hit_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv3_h4_thr0p5pct_hit_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv4_h4_thr0p4pct_hit_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_2_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_3_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_4_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_5_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_2_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_6_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__hv5_h4_thr0p4pct_hit_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv10_h4_thr0p_55pct_tolerant0p1pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv11_h4_thr0p_4pct_tolerant0p1pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv12_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv13_h4_thr0p_3pct_tolerant0p1pct_4p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv14_h4_thr0p_3pct_tolerant0p1pct_51p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv15_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv16_h4_thr0p_3pct_tolerant0p1pct_5p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv17_h4_thr0p_3pct_tolerant0p1pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv18_h4_thr0p_3pct_tolerant0p1pct_7p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv19_h4_thr0p_3pct_tolerant0p1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv1_h4_thr0p7pct_tolerant0p3pct_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv20_h4_thr0p_6pct_tolerant0p1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv21_h4_thr0p_6pct_tolerant0p6pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv22_h4_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv23_h3_thr0p_3pct_tolerant_p_pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv24_h6_thr0p_6pct_tolerant_p_pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv25_h6_thr1p_0pct_tolerant_p_pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv26_h6_thr1p_0pct_strict_p_pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv27_h6_thr1p_0pct_tolerant_p_pct_5p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv28_h6_thr1p_5pct_tolerant_p_pct_5p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv29_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv2_h4_thr0p_8pct_tolerant0p4pct_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv30_h4_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv31_h4_thr0p_3pct_tolerant_0p_1pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv32_h4_thr0p_3pct_tolerant_0p_1pct_5_75p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv33_h3_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv34_h5_thr0p_3pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv35_h5_thr0p_4pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv36_h5_thr0p_35pct_tolerant_0p_1pct_55p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv3_h4_thr0p_65pct_tolerant0p35pct_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv4_h4_thr0p_65pct_tolerant0p15pct_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv5_h4_thr0p_65pct_tolerant0p15pct_7p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv6_h4_thr0p_6pct_tolerant0p15pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv7_h4_thr0p_6pct_tolerant0p2pct_7p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv8_h4_thr0p_6pct_tolerant0p2pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__nv9_h4_thr0p_55pct_tolerant0p2pct_6p_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__v0_h4_thr1pct_strict_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__v1_h4_thr0p5pct_strict_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__v3_h4_thr0p3pct_relaxed_report.pdf
+D	notebooks/results/final_two_stage/two_stage_final__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+D	notebooks/results/two_stage__v1_h4_thr0p5pct_strict_report.pdf
+D	notebooks/results/two_stage__v2_h4_thr0p5pct_strict_newfeat_report.pdf
+D	notebooks/results/two_stage__v3_h4_thr0p3pct_relaxed_report.pdf
+D	notebooks/results/two_stage__v4_h4_thr0p5pct_tolerant0p3pct_report.pdf
+D	notebooks/results/two_stage__v5_h4_thr0p5pct_tolerant0p3pct_spw1p0_report.pdf
+D	notebooks/results/two_stage__v6_h4_thr0p5pct_tolerant0p3pct_sigdepth2_report.pdf
+D	notebooks/results/two_stage__v7_h4_thr0p5pct_tolerant0p3pct_sigdepth4_n600_report.pdf
+D	notebooks/results/two_stage__v8_h4_thr0p5pct_tolerant0p3pct_sig_easytrain_report.pdf
+D	notebooks/results/two_stage__v9_h4_thr0p5pct_tol0p3_30dfeat_report.pdf
+D	notebooks/results/updown__s1_h4_thr0p5pct_tol0p3_report.pdf
+D	notebooks/results/updown__s2_h4_thr0p5pct_tol0p3_report.pdf
+M	scripts/compare_experiments_pnl.py
+M	scripts/generate_two_stage_report.py
+M	src/data/label_eurusd.py
+M	src/models/train_xgboost_two_stage.py
+[END GIT LOG NAME-STATUS]
+
+================================================================================
+SLIDE-DECK OUTLINE (10–15 Minuten, direkt nutzbar)
+================================================================================
+Slide 1: Titel & Kontext (Modul, Team, Problemstatement)
+Slide 2: Problem & Ziel (Trade‑Signal + Richtung, warum relevant)
+Slide 3: Daten (FX + News), Coverage & Daily‑Cut Problematik
+Slide 4: Labeling Evolution (strict → tolerant → hit → first‑hit; Beispiele)
+Slide 5: Feature Engineering (Preis, Kalender, Holidays, optional News)
+Slide 6: Modellarchitektur (Two‑Stage XGBoost), zeitliches Split
+Slide 7: Thresholds → Trades (No‑Trade‑Zone, cost‑basiertes Tuning)
+Slide 8: Ergebnisse (F1, Confusion Matrices) – Referenz `hp_long_final_yahoo` + Hinweis auf stärkere EXP_IDs
+Slide 9: Trading‑Resultate & Vergleich (P&L‑Kurven; z.B. `hp_long_final_yahoo_8` vs `hv_long_final_yahoo`, plus Ranking‑Tabelle)
+Slide 10: Herausforderungen & Learnings
+Slide 11: Grenzen & Risiken (Simplifications, Broker‑Cut, Kostenmodell)
+Slide 12: Empfehlungen / Next Steps + Demo‑Plan (PDF‑Report zeigen, P&L‑Vergleich zeigen)

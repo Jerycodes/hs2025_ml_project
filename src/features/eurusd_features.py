@@ -80,76 +80,89 @@ def add_eurusd_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.sort_values("date").copy()
 
-    # ---------- Preis-Features (price_...) ----------
+    df = add_price_features(df)
+    df = add_news_features(df)
+    df = add_calendar_features(df)
+    df = _add_us_holiday_flags(df)
+    return df
+
+
+def add_price_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Fügt nur Preis-Features hinzu (price_*).
+
+    Wichtig: Diese Features sollten idealerweise auf der vollen Preis-Historie
+    berechnet werden, auch wenn später (z.B. bei News-Merge) frühere Tage
+    weggefiltert werden. Sonst verlieren Rolling-Features Kontext.
+    """
+    if df.empty:
+        return df
+    df = df.sort_values("date").copy()
+
     close = df["Close"]
     df["price_close_ret_1d"] = close.pct_change(periods=1)
     df["price_close_ret_5d"] = close.pct_change(periods=5)
 
-    df["price_range_pct_5d_std"] = (
-        df["intraday_range_pct"].rolling(window=5, min_periods=5).std()
-    )
-    df["price_body_pct_5d_mean"] = (
-        df["body_pct"].rolling(window=5, min_periods=5).mean()
-    )
+    df["price_range_pct_5d_std"] = df["intraday_range_pct"].rolling(window=5, min_periods=5).std()
+    df["price_body_pct_5d_mean"] = df["body_pct"].rolling(window=5, min_periods=5).mean()
 
-    # 30-Tage-Historie: mittelfristiger Trend und Volatilität
     df["price_close_ret_30d"] = close.pct_change(periods=30)
-    df["price_range_pct_30d_std"] = (
-        df["intraday_range_pct"].rolling(window=30, min_periods=30).std()
-    )
-    df["price_body_pct_30d_mean"] = (
-        df["body_pct"].rolling(window=30, min_periods=30).mean()
-    )
+    df["price_range_pct_30d_std"] = df["intraday_range_pct"].rolling(window=30, min_periods=30).std()
+    df["price_body_pct_30d_mean"] = df["body_pct"].rolling(window=30, min_periods=30).mean()
 
-    # Kerzenform-Intensität: Verhältnis von Body zu gesamter Tagesrange
     eps = 1e-6
-    df["price_body_vs_range"] = df["body_pct"].abs() / (
-        df["intraday_range_pct"].abs() + eps
-    )
-    df["price_body_vs_range_5d_mean"] = (
-        df["price_body_vs_range"].rolling(window=5, min_periods=5).mean()
-    )
+    df["price_body_vs_range"] = df["body_pct"].abs() / (df["intraday_range_pct"].abs() + eps)
+    df["price_body_vs_range_5d_mean"] = df["price_body_vs_range"].rolling(window=5, min_periods=5).mean()
 
-    # Schatten-Balance: Überwiegt oberer oder unterer Schatten?
     if "upper_shadow" in df.columns and "lower_shadow" in df.columns:
         df["price_shadow_balance"] = (df["upper_shadow"] - df["lower_shadow"]) / (
             df["upper_shadow"] + df["lower_shadow"] + eps
         )
-        df["price_shadow_balance_5d_mean"] = (
-            df["price_shadow_balance"].rolling(window=5, min_periods=5).mean()
-        )
+        df["price_shadow_balance_5d_mean"] = df["price_shadow_balance"].rolling(window=5, min_periods=5).mean()
 
-    # ---------- News-Historie / -Intensität (news_...) ----------
-    df["news_article_count_3d_sum"] = (
-        df["article_count"].rolling(window=3, min_periods=3).sum()
-    )
-    df["news_article_count_7d_sum"] = (
-        df["article_count"].rolling(window=7, min_periods=7).sum()
-    )
+    return df
 
-    df["news_pos_share_5d_mean"] = (
-        df["pos_share"].rolling(window=5, min_periods=5).mean()
-    )
-    df["news_neg_share_5d_mean"] = (
-        df["neg_share"].rolling(window=5, min_periods=5).mean()
-    )
 
-    df["news_article_count_lag1"] = df["article_count"].shift(1)
-    df["news_pos_share_lag1"] = df["pos_share"].shift(1)
-    df["news_neg_share_lag1"] = df["neg_share"].shift(1)
+def add_news_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Fügt nur News-/Sentiment-Historie Features hinzu (news_*).
 
-    # ---------- Kalender-Features (cal_...) ----------
+    Erwartet Spalten:
+    - article_count, pos_share, neg_share (oder sinnvolle Defaults)
+    """
+    if df.empty:
+        return df
+    df = df.sort_values("date").copy()
+
+    if "article_count" in df.columns:
+        df["news_article_count_3d_sum"] = df["article_count"].rolling(window=3, min_periods=3).sum()
+        df["news_article_count_7d_sum"] = df["article_count"].rolling(window=7, min_periods=7).sum()
+        df["news_article_count_lag1"] = df["article_count"].shift(1)
+    if "pos_share" in df.columns:
+        df["news_pos_share_5d_mean"] = df["pos_share"].rolling(window=5, min_periods=5).mean()
+        df["news_pos_share_lag1"] = df["pos_share"].shift(1)
+    if "neg_share" in df.columns:
+        df["news_neg_share_5d_mean"] = df["neg_share"].rolling(window=5, min_periods=5).mean()
+        df["news_neg_share_lag1"] = df["neg_share"].shift(1)
+
+    return df
+
+
+def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Fügt Kalender-Features hinzu (cal_*)."""
+    if df.empty:
+        return df
+    df = df.sort_values("date").copy()
+
     date = df["date"]
     dow = date.dt.dayofweek  # Montag=0, Sonntag=6
-
     df["cal_dow"] = dow
     df["cal_day_of_month"] = date.dt.day
     df["cal_is_monday"] = (dow == 0).astype("int8")
     df["cal_is_friday"] = (dow == 4).astype("int8")
     df["cal_is_month_start"] = date.dt.is_month_start.astype("int8")
     df["cal_is_month_end"] = date.dt.is_month_end.astype("int8")
-
-    # ---------- Feiertags-Features (hol_...) ----------
-    df = _add_us_holiday_flags(df)
-
     return df
+
+
+def add_holiday_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Fügt Holiday-Features hinzu (hol_*)."""
+    return _add_us_holiday_flags(df)

@@ -80,6 +80,9 @@ def _compute_strategy_series(
     stake_fixed_chf: float,
     frac_capital: float,
     start_capital: float,
+    override_signal_threshold_trade: float | None = None,
+    override_direction_threshold_down: float | None = None,
+    override_direction_threshold_up: float | None = None,
 ) -> pd.DataFrame:
     preds = load_predictions(project_root, exp_id)
     if preds is None:
@@ -96,6 +99,42 @@ def _compute_strategy_series(
     df["date"] = pd.to_datetime(df["date"])
     df["label_true"] = df["label_true"].astype(str)
     df["combined_pred"] = df["combined_pred"].astype(str)
+
+    # Optional: recompute trading decisions from probabilities using fixed thresholds.
+    # This allows a fair comparison where BOTH experiments use identical thresholds.
+    overrides = [
+        override_signal_threshold_trade,
+        override_direction_threshold_down,
+        override_direction_threshold_up,
+    ]
+    if any(v is not None for v in overrides):
+        if not all(v is not None for v in overrides):
+            raise ValueError(
+                "Wenn Threshold-Overrides verwendet werden, müssen ALLE gesetzt sein: "
+                "--override-signal-trade, --override-dir-down, --override-dir-up."
+            )
+
+        if "signal_prob" not in df.columns or "direction_prob_up" not in df.columns:
+            raise KeyError(
+                "Predictions-CSV muss 'signal_prob' und 'direction_prob_up' enthalten, "
+                "damit Threshold-Overrides funktionieren."
+            )
+
+        sig_thr = float(override_signal_threshold_trade)
+        dir_thr_down = float(override_direction_threshold_down)
+        dir_thr_up = float(override_direction_threshold_up)
+        if dir_thr_down > dir_thr_up:
+            raise ValueError(
+                f"Ungültige Direction-Thresholds: dir_down={dir_thr_down} > dir_up={dir_thr_up}. "
+                "Erwarte dir_down <= dir_up."
+            )
+
+        combined = np.full(len(df), "neutral", dtype=object)
+        mask_trade = df["signal_prob"].astype(float).to_numpy() >= sig_thr
+        dir_p = df["direction_prob_up"].astype(float).to_numpy()
+        combined[mask_trade & (dir_p >= dir_thr_up)] = "up"
+        combined[mask_trade & (dir_p <= dir_thr_down)] = "down"
+        df["combined_pred"] = combined.astype(str)
 
     settle_at_exit = str(variant).endswith("_exit")
     base_variant = str(variant).replace("_exit", "")
@@ -210,6 +249,24 @@ def main() -> None:
     parser.add_argument("--stake-fixed", type=float, default=100.0, help="Einsatz pro Trade (Strategie A)")
     parser.add_argument("--frac-capital", type=float, default=0.10, help="Kapitalanteil pro Trade (Strategie B)")
     parser.add_argument("--start-capital", type=float, default=1000.0, help="Startkapital (Strategie B)")
+    parser.add_argument(
+        "--override-signal-trade",
+        type=float,
+        default=None,
+        help="Optional: SIGNAL_THRESHOLD_TRADE für beide Experimente fixieren (rechnet combined_pred aus signal_prob neu).",
+    )
+    parser.add_argument(
+        "--override-dir-down",
+        type=float,
+        default=None,
+        help="Optional: DIRECTION_THRESHOLD_DOWN für beide Experimente fixieren (combined_pred neu aus direction_prob_up).",
+    )
+    parser.add_argument(
+        "--override-dir-up",
+        type=float,
+        default=None,
+        help="Optional: DIRECTION_THRESHOLD_UP für beide Experimente fixieren (combined_pred neu aus direction_prob_up).",
+    )
     parser.add_argument("--output", type=Path, default=None, help="Output-Pfad (.png oder .pdf)")
     args = parser.parse_args()
 
@@ -227,6 +284,9 @@ def main() -> None:
         stake_fixed_chf=args.stake_fixed,
         frac_capital=args.frac_capital,
         start_capital=args.start_capital,
+        override_signal_threshold_trade=args.override_signal_trade,
+        override_direction_threshold_down=args.override_dir_down,
+        override_direction_threshold_up=args.override_dir_up,
     ).rename(columns={"pnl_cum": "pnl_a"})
 
     df_b = _compute_strategy_series(
@@ -238,6 +298,9 @@ def main() -> None:
         stake_fixed_chf=args.stake_fixed,
         frac_capital=args.frac_capital,
         start_capital=args.start_capital,
+        override_signal_threshold_trade=args.override_signal_trade,
+        override_direction_threshold_down=args.override_dir_down,
+        override_direction_threshold_up=args.override_dir_up,
     ).rename(columns={"pnl_cum": "pnl_b"})
 
     # Fairer Vergleich: nur gemeinsame Test-Daten

@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.features.eurusd_features import add_eurusd_features
+from src.features.eurusd_features import (
+    add_eurusd_features,
+    add_price_features,
+    add_news_features,
+    add_calendar_features,
+    add_holiday_features,
+)
 from src.utils.io import DATA_PROCESSED
 
 
@@ -56,44 +62,59 @@ def build_training_dataframe(exp_id: str | None = None) -> pd.DataFrame:
     """
     news = load_news_features()
     labels = load_labels(exp_id=exp_id)
-    merged = labels.merge(news, on="date", how="inner")
+
+    # Wichtig: Preis-Features sollten auf der vollen Preis-Historie berechnet werden,
+    # auch wenn die News erst später starten (z.B. ab 2020). Sonst verlieren Rolling-
+    # Features (5d/30d) am Anfang der News-Periode den Kontext und werden unnötig NaN.
+    labels = labels.sort_values("date").copy()
 
     # Zusätzliche Zielvariablen für das Zwei-Stufen-Modell:
     # signal: 1 = Bewegung (up/down), 0 = neutral.
-    merged["signal"] = (merged["label"] != "neutral").astype(int)
+    labels["signal"] = (labels["label"] != "neutral").astype(int)
 
     # direction: nur für Tage mit Bewegung relevant.
     # 1 = up, 0 = down, NaN = neutral (wird für das Richtungsmodell ignoriert).
     direction_map = {"down": 0, "up": 1}
-    merged["direction"] = merged["label"].map(direction_map)
+    labels["direction"] = labels["label"].map(direction_map)
 
     # Kalender-basierte Zusatzfeatures:
     # Monat (1–12), Kalenderwoche (ISO-Standard) und Quartal (1–4).
-    merged["month"] = merged["date"].dt.month
-    iso = merged["date"].dt.isocalendar()
-    merged["week"] = iso.week.astype(int)
-    merged["quarter"] = merged["date"].dt.quarter
+    labels["month"] = labels["date"].dt.month
+    iso = labels["date"].dt.isocalendar()
+    labels["week"] = iso.week.astype(int)
+    labels["quarter"] = labels["date"].dt.quarter
 
     # Preisbasierte Tagesfeatures aus High/Low/Open/Close:
     # 1) Intraday-Spanne in absoluten Punkten.
-    merged["intraday_range"] = merged["High"] - merged["Low"]
+    labels["intraday_range"] = labels["High"] - labels["Low"]
     # 2) Intraday-Spanne relativ zum Schlusskurs (Volatilität eines Tages).
-    merged["intraday_range_pct"] = merged["intraday_range"] / merged["Close"]
+    labels["intraday_range_pct"] = labels["intraday_range"] / labels["Close"]
     # 3) Kerzenkoerper: Close minus Open (positiv = bullische Kerze).
-    merged["body"] = merged["Close"] - merged["Open"]
-    merged["body_pct"] = merged["body"] / merged["Close"]
+    labels["body"] = labels["Close"] - labels["Open"]
+    labels["body_pct"] = labels["body"] / labels["Close"]
     # 4) Docht/Lunte: Abstand vom Kerzenkoerper zu High/Low.
-    merged["upper_shadow"] = merged["High"] - merged[["Open", "Close"]].max(axis=1)
-    merged["lower_shadow"] = merged[["Open", "Close"]].min(axis=1) - merged["Low"]
+    labels["upper_shadow"] = labels["High"] - labels[["Open", "Close"]].max(axis=1)
+    labels["lower_shadow"] = labels[["Open", "Close"]].min(axis=1) - labels["Low"]
+
+    # Preis-Features (rolling etc.) auf kompletter Preis-Historie berechnen
+    # (News-Features werden später auf dem gemergten Zeitraum berechnet).
+    labels = add_price_features(labels)
 
     # Sentiment-basierte abgeleitete Features:
     # Anteil positiver / negativer Sentiment-Anteile (auf Basis avg_pos/avg_neg).
+    # (pos_share/neg_share + News-Rolling erst nach News-Merge, damit keine Stub-Werte.)
+
+    # News ab Startdatum mergen: automatisch nur Zeiträume behalten, wo News existieren.
+    merged = labels.merge(news, on="date", how="inner")
+
     sentiment_denom = (merged["avg_pos"] + merged["avg_neg"]).replace(0, 1e-6)
     merged["pos_share"] = merged["avg_pos"] / sentiment_denom
     merged["neg_share"] = merged["avg_neg"] / sentiment_denom
 
-    # Zusätzliche Preis-/News-/Kalender-/Holiday-Features (ohne Lookahead).
-    merged = add_eurusd_features(merged)
+    # Nur News-Historie + Kalender/Holiday ergänzen (Preis-Features sind bereits da).
+    merged = add_news_features(merged)
+    merged = add_calendar_features(merged)
+    merged = add_holiday_features(merged)
 
     # Für das spätere Modell reichen News-Features + Label + Lookahead + neue Targets.
     cols = [
