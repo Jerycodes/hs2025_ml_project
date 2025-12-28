@@ -1764,10 +1764,15 @@ def _add_trade_simulation_pages_variant(
         pnl_b_trade_lev20: list[float] = []
         # Strategie C (FLEX)
         pending_c: dict[pd.Timestamp, float] = {}
+        pending_c_lev20: dict[pd.Timestamp, float] = {}
         pnl_c: list[float] = []
+        pnl_c_lev20_daily: list[float] = []
         capital_after_c: list[float] = []
+        capital_after_c_lev20: list[float] = []
         stake_c_entry: list[float] = []
+        stake_c_entry_lev20: list[float] = []
         cap_c = float(start_capital)
+        cap_c_lev20 = float(start_capital)
         open_exits_c: list[pd.Timestamp] = []
 
         # Setup FLEX (optional)
@@ -1829,6 +1834,13 @@ def _add_trade_simulation_pages_variant(
         p_sig_arr = df["signal_prob"].astype(float).to_numpy() if "signal_prob" in df.columns else None
         p_up_arr = df["direction_prob_up"].astype(float).to_numpy() if "direction_prob_up" in df.columns else None
 
+        # Trade-level booked P&L series (for loss/time plots)
+        pnl_b_trade_booked = np.zeros(len(df), dtype=float)
+        pnl_c_trade_booked = np.zeros(len(df), dtype=float)
+        pnl_b_trade_booked_lev20 = np.zeros(len(df), dtype=float)
+        pnl_c_trade_booked_lev20 = np.zeros(len(df), dtype=float)
+        trade_events_c: list[dict[str, float | pd.Timestamp]] = []
+
         for i, (dt, r, stake, exit_booked, pred) in enumerate(
             zip(df["date"], df["trade_return"], df["stake_fixed"], df["exit_booked"], pred_arr)
         ):
@@ -1843,6 +1855,9 @@ def _add_trade_simulation_pages_variant(
             realized_c = float(pending_c.pop(dt, 0.0))
             cap_c += realized_c
             pnl_c.append(realized_c)
+            realized_c_lev20 = float(pending_c_lev20.pop(dt, 0.0))
+            cap_c_lev20 += realized_c_lev20
+            pnl_c_lev20_daily.append(realized_c_lev20)
             open_exits_c = [ex for ex in open_exits_c if pd.Timestamp(ex) > pd.Timestamp(dt)]
             open_tr_c = float(min(len(open_exits_c), 5))
 
@@ -1852,9 +1867,16 @@ def _add_trade_simulation_pages_variant(
                 stake_b_entry.append(stake_b)
                 stake_b_entry_lev20.append(stake_b_lev20)
 
-                pending[pd.Timestamp(exit_booked)] = pending.get(pd.Timestamp(exit_booked), 0.0) + stake_b * float(r)
+                exit_ts = pd.Timestamp(exit_booked)
+                j = int(dates_idx.searchsorted(exit_ts))
+
+                trade_pnl_b = stake_b * float(r)
+                pending[exit_ts] = pending.get(exit_ts, 0.0) + trade_pnl_b
+                pnl_b_trade_booked[j] += trade_pnl_b
+
                 trade_pnl_lev20 = stake_b_lev20 * float(r) * 20.0
-                pending_lev20[pd.Timestamp(exit_booked)] = pending_lev20.get(pd.Timestamp(exit_booked), 0.0) + trade_pnl_lev20
+                pending_lev20[exit_ts] = pending_lev20.get(exit_ts, 0.0) + trade_pnl_lev20
+                pnl_b_trade_booked_lev20[j] += trade_pnl_lev20
                 pnl_b_trade_lev20.append(trade_pnl_lev20)
 
                 # Strategie C: stake via FLEX risk_per_trade
@@ -1874,33 +1896,67 @@ def _add_trade_simulation_pages_variant(
                             )
                         )
                         risk = float(max(0.0, min(1.0, risk)))
+
                         stake_c = cap_c * frac * risk
+                        stake_c_lev20 = cap_c_lev20 * frac * risk
                         stake_c_entry.append(stake_c)
-                        pending_c[pd.Timestamp(exit_booked)] = pending_c.get(pd.Timestamp(exit_booked), 0.0) + stake_c * float(r)
-                        open_exits_c.append(pd.Timestamp(exit_booked))
+                        stake_c_entry_lev20.append(stake_c_lev20)
+
+                        trade_pnl_c = stake_c * float(r)
+                        pending_c[exit_ts] = pending_c.get(exit_ts, 0.0) + trade_pnl_c
+                        pnl_c_trade_booked[j] += trade_pnl_c
+
+                        trade_pnl_c_lev20 = stake_c_lev20 * float(r) * 20.0
+                        pending_c_lev20[exit_ts] = pending_c_lev20.get(exit_ts, 0.0) + trade_pnl_c_lev20
+                        pnl_c_trade_booked_lev20[j] += trade_pnl_c_lev20
+
+                        open_exits_c.append(exit_ts)
+                        trade_events_c.append(
+                            {
+                                "exit_date": exit_ts,
+                                "stake_chf": float(stake_c),
+                                "pnl_chf": float(trade_pnl_c),
+                                "risk_per_trade": float(risk),
+                                "signal_confidence": float(sig_conf),
+                                "volatility": float(v),
+                                "open_trades": float(open_tr_c),
+                            }
+                        )
                     except Exception as e:
                         flex_ok = False
                         flex_note = f"FLEX evaluate fehlgeschlagen: {type(e).__name__}: {str(e).splitlines()[0]}"
                         stake_c_entry.append(0.0)
+                        stake_c_entry_lev20.append(0.0)
                 else:
                     stake_c_entry.append(0.0)
+                    stake_c_entry_lev20.append(0.0)
             else:
                 stake_b_entry.append(0.0)
                 stake_b_entry_lev20.append(0.0)
                 pnl_b_trade_lev20.append(0.0)
                 stake_c_entry.append(0.0)
+                stake_c_entry_lev20.append(0.0)
 
             capital_after.append(capital)
             capital_after_lev20.append(capital_lev20)
             capital_after_c.append(cap_c)
+            capital_after_c_lev20.append(cap_c_lev20)
 
         df["stake_b_entry"] = stake_b_entry
         df["stake_b_entry_lev20"] = stake_b_entry_lev20
         df["pnl_b_trade_lev20"] = pnl_b_trade_lev20
         df["pnl_b_lev20"] = pnl_b_lev20_daily
         df["capital_after_c"] = capital_after_c
+        df["capital_after_c_lev20"] = capital_after_c_lev20
         df["stake_c_entry"] = stake_c_entry
+        df["stake_c_entry_lev20"] = stake_c_entry_lev20
         df["pnl_c"] = pnl_c
+        df["pnl_c_lev20"] = pnl_c_lev20_daily
+        df["pnl_b_trade_booked"] = pnl_b_trade_booked
+        df["pnl_c_trade_booked"] = pnl_c_trade_booked
+        df["pnl_b_trade_booked_lev20"] = pnl_b_trade_booked_lev20
+        df["pnl_c_trade_booked_lev20"] = pnl_c_trade_booked_lev20
+        df.attrs["trade_events_c"] = trade_events_c
         if flex_note is not None:
             # keep it short for the PDF; avoid multi-line CLI spam inside table cells
             note = " ".join(str(flex_note).split())
@@ -1930,6 +1986,13 @@ def _add_trade_simulation_pages_variant(
     min_capital = float(min(capital_after) if capital_after else start_capital)
     final_capital_lev20 = float(capital_lev20)
     min_capital_lev20 = float(min(capital_after_lev20) if capital_after_lev20 else start_capital)
+    if settle_at_exit and "capital_after_c_lev20" in df.columns:
+        cap_c_lev20_series = df["capital_after_c_lev20"].astype(float).to_numpy()
+        final_capital_c_lev20 = float(cap_c_lev20_series[-1]) if len(cap_c_lev20_series) else start_capital
+        min_capital_c_lev20 = float(np.min(cap_c_lev20_series)) if len(cap_c_lev20_series) else start_capital
+    else:
+        final_capital_c_lev20 = start_capital
+        min_capital_c_lev20 = start_capital
     if not settle_at_exit:
         # pro-Tag P&L für Strategie B mit Hebel 20
         prev_cap_lev20 = pd.Series(capital_after_lev20).shift(1).fillna(start_capital).to_numpy()
@@ -1991,15 +2054,20 @@ def _add_trade_simulation_pages_variant(
         min_c = float(np.min(cap_c_series)) if len(cap_c_series) else start_capital
         stake_c = df.get("stake_c_entry", pd.Series([0.0] * len(df))).astype(float).to_numpy()
         mean_stake_c = float(np.mean(stake_c[stake_c > 0])) if np.any(stake_c > 0) else 0.0
+        stake_c_lev20 = df.get("stake_c_entry_lev20", pd.Series([0.0] * len(df))).astype(float).to_numpy()
+        mean_stake_c_lev20 = float(np.mean(stake_c_lev20[stake_c_lev20 > 0])) if np.any(stake_c_lev20 > 0) else 0.0
         summary_rows += [
             ["C (FLEX)", "Endkapital (CHF)", f"{final_c:.2f}"],
             ["C (FLEX)", "Minimum Kapital (CHF)", f"{min_c:.2f}"],
             ["C (FLEX)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake_c:.2f}"],
+            ["C (FLEX, Hebel 20)", "Endkapital (CHF)", f"{final_capital_c_lev20:.2f}"],
+            ["C (FLEX, Hebel 20)", "Minimum Kapital (CHF)", f"{min_capital_c_lev20:.2f}"],
+            ["C (FLEX, Hebel 20)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake_c_lev20:.2f}"],
             ["C (FLEX)", "FLEX_CMD", os.environ.get("FLEX_CMD", "flex")],
         ]
         flex_note = str(df.attrs.get("flex_note") or "")
 
-    fig, ax = plt.subplots(figsize=(8.27, 3.5))
+    fig, ax = plt.subplots(figsize=(11.69, 6.8))
     ax.axis("off")
     ax.set_title(f"{title_prefix}Tradesimulation – Strategien A/B/C (Test-Split)", fontsize=12, weight="bold", pad=10)
 
@@ -2011,11 +2079,12 @@ def _add_trade_simulation_pages_variant(
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
-    table.scale(1.1, 1.2)
+    table.scale(1.0, 1.25)
 
+    fig.subplots_adjust(top=0.88, bottom=0.18)
     fig.text(
         0.01,
-        0.03,
+        0.10,
         "Tabelle: Zusammenfassung der Tradesimulation auf dem Test-Split.\n"
         "Strategie A: fixer Einsatz pro Trade (100 CHF bei up, 100 CHF bei down).\n"
         "Strategie B: 10 % des aktuellen Vermögens pro Trade (optional mit Hebel 20).\n"
@@ -2023,7 +2092,7 @@ def _add_trade_simulation_pages_variant(
         fontsize=8,
     )
     if settle_at_exit and flex_note:
-        fig.text(0.01, 0.01, f"FLEX Hinweis: {flex_note}", fontsize=7, alpha=0.85)
+        fig.text(0.01, 0.04, f"FLEX Hinweis: {flex_note}", fontsize=7, alpha=0.85)
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -2032,9 +2101,14 @@ def _add_trade_simulation_pages_variant(
         try:
             cap_b = df["capital_after"].astype(float).to_numpy()
             cap_c = df["capital_after_c"].astype(float).to_numpy()
+            cap_b_lev20 = df["capital_after_lev20"].astype(float).to_numpy()
+            cap_c_lev20 = df.get("capital_after_c_lev20", pd.Series([start_capital] * len(df))).astype(float).to_numpy()
             stake_b = df.get("stake_b_entry", pd.Series([0.0] * len(df))).astype(float).to_numpy()
             stake_c = df.get("stake_c_entry", pd.Series([0.0] * len(df))).astype(float).to_numpy()
+            stake_b_lev20 = df.get("stake_b_entry_lev20", pd.Series([0.0] * len(df))).astype(float).to_numpy()
+            stake_c_lev20 = df.get("stake_c_entry_lev20", pd.Series([0.0] * len(df))).astype(float).to_numpy()
             delta = cap_c - cap_b
+            delta_lev20 = cap_c_lev20 - cap_b_lev20
 
             fig, (ax1, ax2) = plt.subplots(
                 2, 1, figsize=(11.69, 6.5), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
@@ -2057,6 +2131,34 @@ def _add_trade_simulation_pages_variant(
             pdf.savefig(fig)
             plt.close(fig)
 
+            # Leverage 20 comparison (B vs C)
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=(11.69, 6.5), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
+            )
+            ax1.plot(df["date"], cap_b_lev20, label="Strategie B (fix 10%, Hebel 20)", linewidth=2)
+            ax1.plot(df["date"], cap_c_lev20, label="Strategie C (FLEX, Hebel 20)", linewidth=2)
+            ax1.axhline(start_capital, color="black", linewidth=1, alpha=0.4)
+            ax1.set_title(
+                f"{title_prefix}Strategie B vs C – Kapitalverlauf (Hebel 20, Variante 3, Test-Split)",
+                fontsize=13,
+                weight="bold",
+            )
+            ax1.set_ylabel("Kapital (CHF)")
+            ax1.legend()
+            ax2.bar(
+                df["date"],
+                delta_lev20,
+                width=3.0,
+                color=np.where(delta_lev20 >= 0, "#2ca02c", "#d62728"),
+                alpha=0.8,
+            )
+            ax2.axhline(0.0, color="black", linewidth=1)
+            ax2.set_ylabel("Δ (C−B)\n(CHF)")
+            ax2.set_xlabel("Datum")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
             fig, ax = plt.subplots(figsize=(11.69, 4.5))
             ax.scatter(df["date"][stake_b > 0], stake_b[stake_b > 0], s=18, alpha=0.85, label="B: Einsatz (fix 10%)")
             ax.scatter(df["date"][stake_c > 0], stake_c[stake_c > 0], s=18, alpha=0.85, label="C: Einsatz (FLEX)")
@@ -2067,6 +2169,61 @@ def _add_trade_simulation_pages_variant(
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
+
+            # Losses over time (booked per exit day)
+            pnl_b_booked = df.get("pnl_b_trade_booked", pd.Series([0.0] * len(df))).astype(float).to_numpy()
+            pnl_c_booked = df.get("pnl_c_trade_booked", pd.Series([0.0] * len(df))).astype(float).to_numpy()
+            loss_b = np.minimum(pnl_b_booked, 0.0)
+            loss_c = np.minimum(pnl_c_booked, 0.0)
+            cum_loss_b = np.cumsum(loss_b)
+            cum_loss_c = np.cumsum(loss_c)
+
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=(11.69, 6.2), gridspec_kw={"height_ratios": [2, 2]}, sharex=True
+            )
+            ax1.plot(df["date"], cum_loss_b, label="B: kumulierte Verluste", linewidth=2)
+            ax1.plot(df["date"], cum_loss_c, label="C: kumulierte Verluste (FLEX)", linewidth=2)
+            ax1.axhline(0.0, color="black", linewidth=1, alpha=0.5)
+            ax1.set_ylabel("Kumulierte Verluste (CHF)")
+            ax1.set_title(f"{title_prefix}Verluste über Zeit – Strategie B vs C (Variante 3)", fontsize=13, weight="bold")
+            ax1.legend()
+
+            ax2.scatter(df["date"][loss_b < 0], -loss_b[loss_b < 0], s=14, alpha=0.75, label="B: Verlust pro Trade")
+            ax2.scatter(df["date"][loss_c < 0], -loss_c[loss_c < 0], s=14, alpha=0.75, label="C: Verlust pro Trade (FLEX)")
+            ax2.set_ylabel("Verlust pro Trade (CHF)")
+            ax2.set_xlabel("Datum (Exit)")
+            ax2.legend()
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # Strategy C: stake vs P&L per trade (to see if higher stake correlates with wins)
+            trade_events_c = df.attrs.get("trade_events_c") or []
+            if isinstance(trade_events_c, list) and len(trade_events_c) > 0:
+                trades_c = pd.DataFrame(trade_events_c)
+                trades_c = trades_c[pd.notna(trades_c.get("exit_date"))].copy()
+                if not trades_c.empty:
+                    trades_c["pnl_sign"] = np.where(trades_c["pnl_chf"] >= 0, "win", "loss")
+                    fig, ax = plt.subplots(figsize=(11.69, 5.0))
+                    colors = np.where(trades_c["pnl_chf"].to_numpy() >= 0, "#2ca02c", "#d62728")
+                    ax.scatter(
+                        trades_c["stake_chf"].astype(float),
+                        trades_c["pnl_chf"].astype(float),
+                        c=colors,
+                        s=28,
+                        alpha=0.85,
+                    )
+                    ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
+                    ax.set_title(
+                        f"{title_prefix}Strategie C (FLEX) – Einsatz vs Gewinn/Verlust pro Trade",
+                        fontsize=13,
+                        weight="bold",
+                    )
+                    ax.set_xlabel("Einsatz (CHF)")
+                    ax.set_ylabel("P&L pro Trade (CHF, am Exit)")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
         except Exception as e:
             fig = plt.figure(figsize=(11.69, 3.5))
             fig.patch.set_facecolor("white")
