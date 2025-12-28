@@ -24,10 +24,10 @@ VAR_OUTPUT
 END_VAR
 
 FUZZIFY signal_confidence
-  // More contrast: low stays high longer, high starts later (so "really sure" is required).
-  TERM low    := (0.00, 1.00) (0.55, 0.00);
-  TERM medium := (0.40, 0.00) (0.70, 1.00) (0.90, 0.00);
-  TERM high   := (0.78, 0.00) (1.00, 1.00);
+  // High starts earlier to allow higher stakes when the model is "relatively sure".
+  TERM low    := (0.00, 1.00) (0.50, 0.00);
+  TERM medium := (0.35, 0.00) (0.65, 1.00) (0.85, 0.00);
+  TERM high   := (0.72, 0.00) (1.00, 1.00);
 END_FUZZIFY
 
 FUZZIFY volatility

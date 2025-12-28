@@ -1865,6 +1865,7 @@ def _add_trade_simulation_pages_variant(
                 flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.05"))
                 flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.02"))
                 flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
+                flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
                 flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
                 resolved = shutil.which(flex_cfg.flex_cmd)
                 if resolved:
@@ -1893,6 +1894,7 @@ def _add_trade_simulation_pages_variant(
                 flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.05"))
                 flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.02"))
                 flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
+                flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
                 flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
         else:
             flex_note = "FLEX deaktiviert: Predictions enthalten nicht 'signal_prob' und 'direction_prob_up'."
@@ -1900,6 +1902,7 @@ def _add_trade_simulation_pages_variant(
             flex_risk_bias = float(os.environ.get("FLEX_RISK_BIAS", "0.05"))
             flex_risk_floor = float(os.environ.get("FLEX_RISK_FLOOR", "0.02"))
             flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
+            flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
             flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
 
         # Volatilität aus Close-Returns (rolling std) und robust auf [0,1] normieren.
@@ -1999,7 +2002,8 @@ def _add_trade_simulation_pages_variant(
                         # produce more contrast: high-confidence -> much higher, low-confidence -> much lower.
                         rr = float(np.clip(risk_raw, 0.0, 1.0))
                         rr = float(rr ** float(flex_risk_power))
-                        risk = float(max(0.0, min(1.0, rr * float(flex_risk_mult) + float(flex_risk_bias))))
+                        mult_eff = float(flex_risk_mult) * float(equity_ratio ** float(flex_equity_mult_gamma))
+                        risk = float(max(0.0, min(1.0, rr * mult_eff + float(flex_risk_bias))))
                         risk = float(max(float(flex_risk_floor), risk))
 
                         stake_c = cap_c * frac * risk
@@ -2030,6 +2034,7 @@ def _add_trade_simulation_pages_variant(
                                 "risk_bias": float(flex_risk_bias),
                                 "risk_power": float(flex_risk_power),
                                 "risk_floor": float(flex_risk_floor),
+                                "equity_mult_gamma": float(flex_equity_mult_gamma),
                                 "equity_norm": float(equity_norm),
                                 "equity_ratio": float(equity_ratio),
                                 "signal_confidence": float(sig_conf),
@@ -2083,6 +2088,7 @@ def _add_trade_simulation_pages_variant(
         df.attrs["flex_risk_bias"] = float(flex_risk_bias)
         df.attrs["flex_risk_power"] = float(flex_risk_power)
         df.attrs["flex_risk_floor"] = float(flex_risk_floor)
+        df.attrs["flex_equity_mult_gamma"] = float(flex_equity_mult_gamma)
         df.attrs["flex_equity_span_ratio"] = float(flex_equity_span_ratio)
     else:
         for r, stake in zip(df["trade_return"], df["stake_fixed"]):
@@ -2188,7 +2194,7 @@ def _add_trade_simulation_pages_variant(
             [
                 "C (FLEX)",
                 "Risk-Kalibrierung",
-                f"risk=max({df.attrs.get('flex_risk_floor', 0.0):.2f}, clip((risk_raw^{df.attrs.get('flex_risk_power', 1.0):.2f})*{df.attrs.get('flex_risk_mult', 1.0):.2f}+{df.attrs.get('flex_risk_bias', 0.0):.2f}))",
+                f"risk=max({df.attrs.get('flex_risk_floor', 0.0):.2f}, clip((risk_raw^{df.attrs.get('flex_risk_power', 1.0):.2f})*(mult*equity_ratio^{df.attrs.get('flex_equity_mult_gamma', 0.0):.2f})+bias))",
             ],
             ["C (FLEX)", "Equity-Norm", f"equity_norm=clip(0.5+0.5*((equity_ratio-1)/{df.attrs.get('flex_equity_span_ratio', 0.5):.2f}),0..1)"],
         ]
@@ -2323,6 +2329,46 @@ def _add_trade_simulation_pages_variant(
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
+
+            # Volatility diagnostics (raw vs normalized) for the exact dates used in the test split.
+            try:
+                if isinstance(vol_on_dates, pd.Series) and len(vol_on_dates) == len(df):
+                    raw = vol_on_dates.astype(float)
+                    raw_nonan = raw.dropna()
+                    if len(raw_nonan) > 10:
+                        q05_v = float(raw_nonan.quantile(0.05))
+                        q50_v = float(raw_nonan.quantile(0.50))
+                        q95_v = float(raw_nonan.quantile(0.95))
+                        miss = float(raw.isna().mean())
+
+                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11.69, 6.2), sharex=False)
+                        ax1.hist(raw_nonan.to_numpy(), bins=30, color="#1f77b4", alpha=0.85)
+                        ax1.axvline(q05_v, color="black", linestyle="--", linewidth=1, alpha=0.7, label="q05/q50/q95")
+                        ax1.axvline(q50_v, color="black", linestyle="--", linewidth=1, alpha=0.7)
+                        ax1.axvline(q95_v, color="black", linestyle="--", linewidth=1, alpha=0.7)
+                        ax1.set_title(f"{title_prefix}Volatilität (rolling 14d std der Close-Returns) – Verteilung", fontsize=13, weight="bold")
+                        ax1.set_xlabel("Volatilität (raw)")
+                        ax1.set_ylabel("Anzahl Tage")
+                        ax1.legend(loc="upper right")
+
+                        ax2.plot(df["date"], vol_norm, color="#ff7f0e", linewidth=2, label="vol_norm (0..1)")
+                        ax2.set_title(f"{title_prefix}Volatilität – Normalisiert (q05..q95 -> 0..1)", fontsize=12)
+                        ax2.set_xlabel("Datum")
+                        ax2.set_ylabel("vol_norm")
+                        ax2.set_ylim(-0.05, 1.05)
+                        ax2.legend(loc="upper right")
+                        fig.tight_layout()
+                        fig.text(
+                            0.01,
+                            0.02,
+                            f"Stats: q05={q05_v:.6f}, median={q50_v:.6f}, q95={q95_v:.6f}, missing={miss:.1%}. "
+                            "Wenn vol_norm fast immer ~0 oder ~1 ist: window/Quantile oder Daten-Abdeckung prüfen.",
+                            fontsize=9,
+                        )
+                        pdf.savefig(fig)
+                        plt.close(fig)
+            except Exception:
+                pass
 
             # Strategy C: stake vs P&L per trade (to see if higher stake correlates with wins)
             trade_events_c = df.attrs.get("trade_events_c") or []

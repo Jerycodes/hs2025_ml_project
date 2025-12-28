@@ -120,10 +120,10 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
     ot = clamp(open_trades, 0.0, 5.0)
     eq = clamp(equity, 0.0, 1.0)
 
-    # More contrast: "low" stays high longer, "high" starts later.
-    sc_low = left_shoulder(sc, 0.0, 0.55)
-    sc_med = triangle(sc, 0.4, 0.7, 0.9)
-    sc_high = right_shoulder(sc, 0.78, 1.0)
+    # High starts earlier to allow higher stakes when the model is "relatively sure".
+    sc_low = left_shoulder(sc, 0.0, 0.50)
+    sc_med = triangle(sc, 0.35, 0.65, 0.85)
+    sc_high = right_shoulder(sc, 0.72, 1.0)
 
     vol_low = left_shoulder(vol, 0.0, 0.4)
     vol_med = triangle(vol, 0.2, 0.5, 0.8)
