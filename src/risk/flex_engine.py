@@ -120,10 +120,10 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
     ot = clamp(open_trades, 0.0, 5.0)
     eq = clamp(equity, 0.0, 1.0)
 
-    # Slightly more aggressive than the original spec (higher average risk).
-    sc_low = left_shoulder(sc, 0.0, 0.35)
-    sc_med = triangle(sc, 0.15, 0.5, 0.85)
-    sc_high = right_shoulder(sc, 0.5, 1.0)
+    # More contrast: "low" stays high longer, "high" starts later.
+    sc_low = left_shoulder(sc, 0.0, 0.55)
+    sc_med = triangle(sc, 0.4, 0.7, 0.9)
+    sc_high = right_shoulder(sc, 0.78, 1.0)
 
     vol_low = left_shoulder(vol, 0.0, 0.4)
     vol_med = triangle(vol, 0.2, 0.5, 0.8)
@@ -144,25 +144,29 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
     r4_low = max(r3_low, sc_low)             # -> risk low
 
     # Equity rules:
-    # - more capital => allow slightly higher risk, only if setup isn't "bad"
+    # - more capital => allow higher risk, only if setup isn't "bad"
     # - less capital => be more conservative
     r5_high = min(eq_high, sc_high, vol_med)                 # -> risk high
     r6_high = min(eq_high, sc_med, vol_low, ot_few)          # -> risk high
     r7_low = eq_low                                          # -> risk low
 
-    deg_low = clamp(max(r4_low, r7_low, 0.0), 0.0, 1.0)
+    # Confidence gating (more decisive sizing)
+    r8_high = min(sc_high, vol_low)                          # -> risk high
+    r9_low = sc_low                                          # -> risk low
+
+    deg_low = clamp(max(r4_low, r7_low, r9_low, 0.0), 0.0, 1.0)
     deg_med = clamp(max(r2_med, 0.0), 0.0, 1.0)
-    deg_high = clamp(max(r1_high, r5_high, r6_high, 0.0), 0.0, 1.0)
+    deg_high = clamp(max(r1_high, r5_high, r6_high, r8_high, 0.0), 0.0, 1.0)
 
     # Defuzzify (centroid) on output universe [0,1]
     num = 0.0
     den = 0.0
     for i in range(0, 1001):
         x = i / 1000.0
-        # Output sets: slightly shifted upward to produce higher average stakes.
-        mu_low = min(deg_low, left_shoulder(x, 0.0, 0.35))
-        mu_med = min(deg_med, triangle(x, 0.15, 0.55, 0.85))
-        mu_high = min(deg_high, right_shoulder(x, 0.45, 1.0))
+        # Output sets: more contrast between low and high.
+        mu_low = min(deg_low, left_shoulder(x, 0.0, 0.20))
+        mu_med = min(deg_med, triangle(x, 0.15, 0.50, 0.85))
+        mu_high = min(deg_high, right_shoulder(x, 0.75, 1.0))
         mu = max(mu_low, mu_med, mu_high)
         num += x * mu
         den += mu
