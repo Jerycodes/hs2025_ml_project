@@ -1867,6 +1867,9 @@ def _add_trade_simulation_pages_variant(
                 flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
                 flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
                 flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
+                flex_stake_frac = float(os.environ.get("FLEX_STAKE_FRAC", "0.15"))
+                flex_sig_q_lo = float(os.environ.get("FLEX_SIGCONF_Q_LO", "0.20"))
+                flex_sig_q_hi = float(os.environ.get("FLEX_SIGCONF_Q_HI", "0.80"))
                 resolved = shutil.which(flex_cfg.flex_cmd)
                 if resolved:
                     try:
@@ -1896,6 +1899,9 @@ def _add_trade_simulation_pages_variant(
                 flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
                 flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
                 flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
+                flex_stake_frac = float(os.environ.get("FLEX_STAKE_FRAC", "0.15"))
+                flex_sig_q_lo = float(os.environ.get("FLEX_SIGCONF_Q_LO", "0.20"))
+                flex_sig_q_hi = float(os.environ.get("FLEX_SIGCONF_Q_HI", "0.80"))
         else:
             flex_note = "FLEX deaktiviert: Predictions enthalten nicht 'signal_prob' und 'direction_prob_up'."
             flex_risk_mult = float(os.environ.get("FLEX_RISK_MULT", "1.80"))
@@ -1904,6 +1910,9 @@ def _add_trade_simulation_pages_variant(
             flex_risk_power = float(os.environ.get("FLEX_RISK_POWER", "1.80"))
             flex_equity_mult_gamma = float(os.environ.get("FLEX_EQUITY_MULT_GAMMA", "0.40"))
             flex_equity_span_ratio = float(os.environ.get("FLEX_EQUITY_SPAN_RATIO", "0.50"))
+            flex_stake_frac = float(os.environ.get("FLEX_STAKE_FRAC", "0.15"))
+            flex_sig_q_lo = float(os.environ.get("FLEX_SIGCONF_Q_LO", "0.20"))
+            flex_sig_q_hi = float(os.environ.get("FLEX_SIGCONF_Q_HI", "0.80"))
 
         # Volatilität aus Close-Returns (rolling std) und robust auf [0,1] normieren.
         dates_idx = pd.DatetimeIndex(df["date"].tolist())
@@ -1919,6 +1928,18 @@ def _add_trade_simulation_pages_variant(
         pred_arr = df["combined_pred"].astype(str).to_numpy()
         p_sig_arr = df["signal_prob"].astype(float).to_numpy() if "signal_prob" in df.columns else None
         p_up_arr = df["direction_prob_up"].astype(float).to_numpy() if "direction_prob_up" in df.columns else None
+
+        # Normalize model confidence to "relative confidence" in [0,1] so FLEX can react more strongly
+        # even if raw probabilities are compressed (e.g., typical sig_conf in 0.2..0.6).
+        sig_conf_raw_arr = np.zeros(len(df), dtype=float)
+        if p_sig_arr is not None and p_up_arr is not None:
+            for i, pred in enumerate(pred_arr):
+                dir_conf_i = float(p_up_arr[i]) if pred == "up" else float(1.0 - p_up_arr[i])
+                sig_conf_raw_arr[i] = float(max(0.0, min(1.0, float(p_sig_arr[i]) * dir_conf_i)))
+        q_lo = float(np.quantile(sig_conf_raw_arr, float(flex_sig_q_lo)))
+        q_hi = float(np.quantile(sig_conf_raw_arr, float(flex_sig_q_hi)))
+        denom_sc = (q_hi - q_lo) if (q_hi > q_lo) else 1.0
+        sig_conf_norm_arr = np.clip((sig_conf_raw_arr - q_lo) / denom_sc, 0.0, 1.0)
 
         # Trade-level booked P&L series (for loss/time plots)
         pnl_b_trade_booked = np.zeros(len(df), dtype=float)
@@ -1982,7 +2003,8 @@ def _add_trade_simulation_pages_variant(
                     p_sig = float(p_sig_arr[i]) if p_sig_arr is not None else 0.0
                     p_up = float(p_up_arr[i]) if p_up_arr is not None else 0.5
                     dir_conf = p_up if pred == "up" else (1.0 - p_up)
-                    sig_conf = float(max(0.0, min(1.0, p_sig * dir_conf)))
+                    sig_conf_raw = float(max(0.0, min(1.0, p_sig * dir_conf)))
+                    sig_conf = float(sig_conf_norm_arr[i]) if len(sig_conf_norm_arr) > i else sig_conf_raw
                     v = float(vol_norm[i]) if len(vol_norm) > i else 0.5
                     try:
                         equity_ratio = float(cap_c / start_capital) if start_capital > 0 else 1.0
@@ -2006,8 +2028,9 @@ def _add_trade_simulation_pages_variant(
                         risk = float(max(0.0, min(1.0, rr * mult_eff + float(flex_risk_bias))))
                         risk = float(max(float(flex_risk_floor), risk))
 
-                        stake_c = cap_c * frac * risk
-                        stake_c_lev20 = cap_c_lev20 * frac * risk
+                        stake_frac_eff = float(np.clip(flex_stake_frac, 0.0, 1.0))
+                        stake_c = cap_c * stake_frac_eff * risk
+                        stake_c_lev20 = cap_c_lev20 * stake_frac_eff * risk
                         stake_c_entry.append(stake_c)
                         stake_c_entry_lev20.append(stake_c_lev20)
 
@@ -2038,6 +2061,10 @@ def _add_trade_simulation_pages_variant(
                                 "equity_norm": float(equity_norm),
                                 "equity_ratio": float(equity_ratio),
                                 "signal_confidence": float(sig_conf),
+                                "signal_confidence_raw": float(sig_conf_raw),
+                                "sigconf_q_lo": float(q_lo),
+                                "sigconf_q_hi": float(q_hi),
+                                "stake_frac": float(stake_frac_eff),
                                 "volatility": float(v),
                                 "open_trades": float(open_tr_c),
                             }
@@ -2090,6 +2117,9 @@ def _add_trade_simulation_pages_variant(
         df.attrs["flex_risk_floor"] = float(flex_risk_floor)
         df.attrs["flex_equity_mult_gamma"] = float(flex_equity_mult_gamma)
         df.attrs["flex_equity_span_ratio"] = float(flex_equity_span_ratio)
+        df.attrs["flex_stake_frac"] = float(flex_stake_frac)
+        df.attrs["flex_sig_q_lo"] = float(flex_sig_q_lo)
+        df.attrs["flex_sig_q_hi"] = float(flex_sig_q_hi)
     else:
         for r, stake in zip(df["trade_return"], df["stake_fixed"]):
             capital_before.append(capital)
@@ -2197,6 +2227,8 @@ def _add_trade_simulation_pages_variant(
                 f"risk=max({df.attrs.get('flex_risk_floor', 0.0):.2f}, clip((risk_raw^{df.attrs.get('flex_risk_power', 1.0):.2f})*(mult*equity_ratio^{df.attrs.get('flex_equity_mult_gamma', 0.0):.2f})+bias))",
             ],
             ["C (FLEX)", "Equity-Norm", f"equity_norm=clip(0.5+0.5*((equity_ratio-1)/{df.attrs.get('flex_equity_span_ratio', 0.5):.2f}),0..1)"],
+            ["C (FLEX)", "Stake-Frac", f"{df.attrs.get('flex_stake_frac', 0.10):.2f} (statt 0.10)"],
+            ["C (FLEX)", "SigConf-Norm", f"norm via q{int(100*df.attrs.get('flex_sig_q_lo',0.2))}/q{int(100*df.attrs.get('flex_sig_q_hi',0.8))}"],
         ]
         flex_note = str(df.attrs.get("flex_note") or "")
 
