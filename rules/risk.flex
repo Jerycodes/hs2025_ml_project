@@ -1,19 +1,14 @@
-# Fuzzy rule set for risk sizing.
-#
-# NOTE:
-# - "FLEX" fuzzy engines differ in syntax. This file uses an IEC 61131-7 FCL-like
-#   structure (common across many fuzzy tools).
-# - If your FLEX CLI expects a different format, adapt this file accordingly.
-#
-# Variables
-# - Inputs:
-#   - signal_confidence: 0..1
-#   - volatility:        0..1
-#   - open_trades:       0..5
-# - Output:
-#   - risk_per_trade:    0..1
-#
-# Defuzzification: centroid / center of gravity (COG).
+// Fuzzy rule set for risk sizing.
+//
+// Note: Different "FLEX" tools use different syntaxes. This file is IEC 61131-7
+// FCL-like (common across many fuzzy engines). If your FLEX CLI expects a
+// different format, adapt this file accordingly.
+//
+// Variables:
+//   Inputs:  signal_confidence (0..1), volatility (0..1), open_trades (0..5)
+//   Output:  risk_per_trade (0..1)
+//
+// Defuzzification: centroid / center of gravity (COG).
 
 FUNCTION_BLOCK risk
 
@@ -50,7 +45,7 @@ DEFUZZIFY risk_per_trade
   TERM medium := (0.20, 0.00) (0.50, 1.00) (0.80, 0.00);
   TERM high   := (0.60, 0.00) (1.00, 1.00);
 
-  METHOD  : COG;      # centroid / center of gravity
+  METHOD  : COG;
   DEFAULT : 0.00;
 END_DEFUZZIFY
 
@@ -74,4 +69,3 @@ RULEBLOCK risk_rules
 END_RULEBLOCK
 
 END_FUNCTION_BLOCK
-

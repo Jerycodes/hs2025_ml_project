@@ -1776,7 +1776,11 @@ def _add_trade_simulation_pages_variant(
         flex_note: str | None = None
         if {"signal_prob", "direction_prob_up"}.issubset(set(df.columns)):
             try:
-                from src.risk.flex_engine import FlexConfig, FlexEngineError, evaluate_risk
+                import re
+                import shutil
+                import subprocess
+
+                from src.risk.flex_engine import FlexConfig, evaluate_risk
 
                 flex_cfg = FlexConfig(
                     flex_cmd=os.environ.get("FLEX_CMD", "flex"),
@@ -1784,10 +1788,29 @@ def _add_trade_simulation_pages_variant(
                     extra_args=(),
                     mode=os.environ.get("FLEX_MODE", "auto"),
                 )
+                resolved = shutil.which(flex_cfg.flex_cmd)
+                if resolved:
+                    try:
+                        proc = subprocess.run([resolved, "--version"], text=True, capture_output=True, check=False)
+                        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                        if re.search(r"\bflex\s+2\.", out, flags=re.IGNORECASE):
+                            flex_note = (
+                                f"FLEX_CMD='{flex_cfg.flex_cmd}' resolved to '{resolved}' (lex flex 2.x). "
+                                "Nutze Python-Fallback; setze FLEX_CMD auf deine fuzzy-FLEX Engine, wenn du das CLI nutzen willst."
+                            )
+                            flex_cfg = FlexConfig(
+                                flex_cmd=flex_cfg.flex_cmd,
+                                pre_args=flex_cfg.pre_args,
+                                rule_path=flex_cfg.rule_path,
+                                extra_args=flex_cfg.extra_args,
+                                mode="python",
+                            )
+                    except Exception:
+                        pass
                 flex_ok = True
             except Exception as e:
                 flex_ok = False
-                flex_note = f"FLEX init fehlgeschlagen: {e}"
+                flex_note = f"FLEX init fehlgeschlagen: {type(e).__name__}: {str(e).splitlines()[0]}"
         else:
             flex_note = "FLEX deaktiviert: Predictions enthalten nicht 'signal_prob' und 'direction_prob_up'."
 
@@ -1857,7 +1880,7 @@ def _add_trade_simulation_pages_variant(
                         open_exits_c.append(pd.Timestamp(exit_booked))
                     except Exception as e:
                         flex_ok = False
-                        flex_note = f"FLEX evaluate fehlgeschlagen: {e}"
+                        flex_note = f"FLEX evaluate fehlgeschlagen: {type(e).__name__}: {str(e).splitlines()[0]}"
                         stake_c_entry.append(0.0)
                 else:
                     stake_c_entry.append(0.0)
@@ -1879,7 +1902,11 @@ def _add_trade_simulation_pages_variant(
         df["stake_c_entry"] = stake_c_entry
         df["pnl_c"] = pnl_c
         if flex_note is not None:
-            df.attrs["flex_note"] = flex_note
+            # keep it short for the PDF; avoid multi-line CLI spam inside table cells
+            note = " ".join(str(flex_note).split())
+            if len(note) > 180:
+                note = note[:177] + "..."
+            df.attrs["flex_note"] = note
     else:
         for r, stake in zip(df["trade_return"], df["stake_fixed"]):
             capital_before.append(capital)
@@ -1970,9 +1997,7 @@ def _add_trade_simulation_pages_variant(
             ["C (FLEX)", "Ø Einsatz pro Trade (CHF)", f"{mean_stake_c:.2f}"],
             ["C (FLEX)", "FLEX_CMD", os.environ.get("FLEX_CMD", "flex")],
         ]
-        flex_note = df.attrs.get("flex_note")
-        if flex_note:
-            summary_rows += [["C (FLEX)", "Hinweis", str(flex_note)]]
+        flex_note = str(df.attrs.get("flex_note") or "")
 
     fig, ax = plt.subplots(figsize=(8.27, 3.5))
     ax.axis("off")
@@ -1997,6 +2022,8 @@ def _add_trade_simulation_pages_variant(
         "Strategie C: Einsatz via FLEX (symbolische Regeln, risk_per_trade in [0,1]).",
         fontsize=8,
     )
+    if settle_at_exit and flex_note:
+        fig.text(0.01, 0.01, f"FLEX Hinweis: {flex_note}", fontsize=7, alpha=0.85)
     pdf.savefig(fig)
     plt.close(fig)
 
