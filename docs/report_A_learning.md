@@ -1,8 +1,15 @@
 # Bericht A (Lernbericht) – hs2025_ml_project
 
-Ziel dieses Dokuments ist, dass du nach dem Lesen **wirklich verstehst**, wie das Projekt aufgebaut ist und wie du es reproduzieren kannst.
+Ziel dieses Dokuments ist, dass du nach dem Lesen **wirklich verstehst**, wie das Projekt aufgebaut ist.  
+Du sollst danach auch wissen, wie du es reproduzieren kannst.
 
-Wichtig: Das Repo ist sehr groß (viele Notebooks + viele Ergebnis-Artefakte). Ich habe deshalb **die Kernmodule und Kern-Notebooks vollständig gelesen** und die restlichen Dateien **strukturell** analysiert (Pfad, Zweck, Muster, Dateitypen). Für “jede einzelne Datei” wörtlich Zeile für Zeile fehlt praktisch der Nutzen, weil sehr viele Dateien automatisch erzeugte Resultate sind.
+Ich schreibe in **einfachen Sätzen**.  
+Ich schreibe aber **trotzdem ausführlich**.
+
+Wichtig: Das Repo ist sehr groß. Es gibt viele Notebooks. Es gibt sehr viele Ergebnis-Dateien.  
+Darum habe ich die **Kernmodule** und die **Kern-Notebooks** vollständig gelesen.  
+Die restlichen Dateien habe ich strukturell analysiert. Ich habe Pfade, Dateitypen und Muster geprüft.  
+Viele Dateien sind automatisch erzeugte Resultate. Die sind weniger relevant, wenn du den Code verstehen willst.
 
 ---
 

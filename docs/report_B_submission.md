@@ -1,15 +1,28 @@
 # Bericht B (Abgabe‑Report) – hs2025_ml_project
 
-Dieses Dokument ist als **Abgabe‑Report** gedacht und folgt der Struktur aus dem Foto.
+Dieses Dokument ist als **Abgabe‑Report** gedacht.  
+Es folgt der Struktur aus dem Foto.
 
-Hinweis: Ich schreibe bewusst **verständlich und in kurzen Sätzen**.  
+Hinweis: Ich schreibe bewusst **verständlich**.  
+Ich verwende **kurze Sätze**.  
+Der Text ist aber **trotzdem ausführlich**.  
 Wo dein Dozent “deine Gedanken” sehen will, habe ich kleine **[TODO]‑Stellen** markiert. Dort solltest du 2–5 Sätze in deiner eigenen Sprache ergänzen.
 
 ---
 
 ## Abstract / Zusammenfassung
 
-In diesem Projekt wurde eine Pipeline entwickelt, die aus historischen EURUSD‑Daten automatisch Handelssignale ableitet. Das Kernproblem ist, dass “neutral” sehr häufig ist und ein direktes 3‑Klassen‑Modell (neutral/up/down) dadurch leicht degeneriert. Deshalb wurde ein Zwei‑Stufen‑Ansatz gewählt: Stufe 1 erkennt, ob eine relevante Bewegung vorliegt (neutral vs. move). Stufe 2 sagt nur bei “move”, ob die Richtung eher up oder down ist. Zusätzlich wurde eine trading‑nahe Evaluation ergänzt (Tradesimulation und P&L). Als symbolische Komponente wurde eine regelbasierte Fuzzy‑Logik integriert, die aus Modell‑Wahrscheinlichkeiten und Risiko‑Inputs (Volatilität, Equity, offene Trades) eine Positionsgröße ableitet. Die Lösung ist reproduzierbar, weil alle Parameter pro Experiment in einer Experiment‑ID (EXP_ID) versioniert werden und automatisch in JSON/CSV/PDF Reports dokumentiert sind.
+In diesem Projekt wurde eine Pipeline entwickelt. Sie erzeugt Handelssignale aus historischen EURUSD‑Daten.  
+Das Kernproblem ist die Klasse “neutral”. Sie ist sehr häufig. Ein direktes 3‑Klassen‑Modell (neutral/up/down) wird dann oft instabil.  
+
+Darum wurde ein **Zwei‑Stufen‑Ansatz** gewählt.  
+Stufe 1 erkennt, ob eine relevante Bewegung vorliegt (neutral vs. move).  
+Stufe 2 sagt nur bei “move”, ob die Richtung eher up oder down ist.  
+
+Zusätzlich wurde eine trading‑nahe Evaluation ergänzt. Sie nutzt Tradesimulation und P&L.  
+Als symbolische Komponente wurde eine regelbasierte Fuzzy‑Logik integriert. Sie nutzt Modell‑Wahrscheinlichkeiten und Risiko‑Inputs (Volatilität, Equity, offene Trades). Sie gibt daraus eine Positionsgröße aus.  
+
+Die Lösung ist reproduzierbar. Jede Experiment‑Konfiguration wird über eine Experiment‑ID (EXP_ID) versioniert. Alle Parameter landen automatisch in JSON/CSV/PDF‑Reports.
 
 ---
 
