@@ -1692,24 +1692,51 @@ def _add_trade_ledger_pages(
         use[c] = use[c].astype(float).map(lambda x: f"{x:.3f}")
     use["open_trades"] = use["open_trades"].astype(float).map(lambda x: f"{x:.0f}")
 
-    n = len(use)
+    # Keep the PDF table readable: shorten column names (headers only).
+    display = use.rename(
+        columns={
+            "trade_id": "trade_id",
+            "entry_date": "entry",
+            "exit_date": "exit",
+            "stake_chf": "stake",
+            "pnl_chf": "pnl",
+            "risk_per_trade": "risk",
+            "signal_confidence": "sig_conf",
+            "volatility": "vol",
+            "open_trades": "open_tr",
+        }
+    )
+
+    n = len(display)
     for start in range(0, n, rows_per_page):
-        part = use.iloc[start : start + rows_per_page]
+        part = display.iloc[start : start + rows_per_page]
         fig, ax = plt.subplots(figsize=(11.69, 8.27))
         ax.axis("off")
         page = 1 + start // rows_per_page
         pages = int(np.ceil(n / rows_per_page))
-        ax.set_title(f"{title} (Seite {page}/{pages})", fontsize=13, weight="bold", pad=10)
+
+        # Use a figure-level title so it never overlaps the table (common issue with ax.set_title + loc="center").
+        fig.suptitle(
+            f"{title} (Seite {page}/{pages})",
+            fontsize=13,
+            weight="bold",
+            y=0.965,
+        )
+
         table = ax.table(
             cellText=part.values,
             colLabels=part.columns.tolist(),
-            loc="center",
+            # Explicit bbox avoids the table creeping into the title area and being clipped.
+            bbox=[0.02, 0.12, 0.96, 0.78],
             cellLoc="center",
         )
         table.auto_set_font_size(False)
         table.set_fontsize(7)
-        table.scale(1.0, 1.25)
-        fig.subplots_adjust(top=0.90, bottom=0.06)
+        try:
+            table.auto_set_column_width(col=list(range(len(part.columns))))
+        except Exception:
+            pass
+        fig.subplots_adjust(top=0.93, bottom=0.08, left=0.03, right=0.97)
         fig.text(
             0.01,
             0.02,

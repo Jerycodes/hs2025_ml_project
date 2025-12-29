@@ -1,0 +1,95 @@
+% risk.ksl
+% Optional KSL (Generation5 FLEX) version of the risk fuzzy system.
+%
+% Notes
+% -----
+% - This file is ONLY needed if you use the historical Generation5 "Flex" engine
+%   that expects KSL syntax (like in the article you pasted).
+% - Our project currently uses `rules/risk.flex` (FCL-like) plus a Python fallback
+%   (`src/risk/flex_engine.py`) which is already symbolic (rule-based fuzzy logic).
+% - KSL examples commonly use ranges 0..100. To keep membership points simple,
+%   this file uses:
+%     signal_confidence: 0..100  (maps from 0..1 by *100)
+%     volatility:        0..100  (maps from 0..1 by *100)
+%     equity:            0..100  (maps from 0..1 by *100)
+%     open_trades:       0..5    (kept as-is)
+%     risk_per_trade:    0..100  (maps back to 0..1 by /100)
+%
+% If you want to run this with a KSL-based FLEX CLI, you must pass scaled inputs
+% accordingly (or adjust the ranges here).
+
+% ---------------------------
+% (1) Fuzzy set definitions
+% ---------------------------
+
+fuzzy_variable signal_confidence ;
+ranges from 0 to 100 ;
+fuzzy_set low is \ shaped and linear at 0, 50 ;
+fuzzy_set medium is /\ shaped and linear at 35, 65, 85 ;
+% High starts earlier (~0.72) like in rules/risk.flex
+fuzzy_set high is / shaped and linear at 72, 100 ;
+
+fuzzy_variable volatility ;
+ranges from 0 to 100 ;
+fuzzy_set low is \ shaped and linear at 0, 40 ;
+fuzzy_set medium is /\ shaped and linear at 20, 50, 80 ;
+fuzzy_set high is / shaped and linear at 60, 100 ;
+
+fuzzy_variable open_trades ;
+ranges from 0 to 5 ;
+fuzzy_set few is \ shaped and linear at 0, 2 ;
+fuzzy_set medium is /\ shaped and linear at 1, 2.5, 4 ;
+fuzzy_set many is / shaped and linear at 3, 5 ;
+
+fuzzy_variable equity ;
+ranges from 0 to 100 ;
+% equity is normalized to [0,1] in code; 50 ~ reference equity
+fuzzy_set low is \ shaped and linear at 0, 45 ;
+fuzzy_set high is / shaped and linear at 55, 100 ;
+
+fuzzy_variable risk_per_trade ;
+ranges from 0 to 100 ;
+% More contrast: very low vs very high outputs.
+fuzzy_set low is \ shaped and linear at 0, 20 ;
+fuzzy_set medium is /\ shaped and linear at 15, 50, 85 ;
+fuzzy_set high is / shaped and linear at 75, 100 ;
+
+% Defuzzification options (as in the Generation5 article)
+defuzzify using all memberships
+and mirror rule
+and shrinking .
+
+% ------------------------
+% (2) Fuzzy rule definitions
+% ------------------------
+
+% Base rules (same intent as rules/risk.flex)
+fuzzy_rule r_1 if signal_confidence is high and volatility is low and open_trades is few then
+risk_per_trade is high.
+
+fuzzy_rule r_2 if signal_confidence is medium and volatility is medium then
+risk_per_trade is medium.
+
+fuzzy_rule r_3 if volatility is high or open_trades is many then
+risk_per_trade is low.
+
+fuzzy_rule r_4 if signal_confidence is low then
+risk_per_trade is low.
+
+% Equity boost (only if setup isn't "bad")
+fuzzy_rule r_5 if equity is high and signal_confidence is high and volatility is medium then
+risk_per_trade is high.
+
+fuzzy_rule r_6 if equity is high and signal_confidence is medium and volatility is low and open_trades is few then
+risk_per_trade is high.
+
+fuzzy_rule r_7 if equity is low then
+risk_per_trade is low.
+
+% Confidence gating (more decisive sizing)
+fuzzy_rule r_8 if signal_confidence is high and volatility is low then
+risk_per_trade is high.
+
+fuzzy_rule r_9 if signal_confidence is low then
+risk_per_trade is low.
+
