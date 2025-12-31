@@ -9,3 +9,9 @@ data/processed/*
 !data/processed/fx/
 data/processed/fx/*
 !data/processed/fx/eurusd_labels.csv
+
+# Office temp files / drafts
+~$*.docx
+
+# Personal working area (not part of submission)
+personal/report_drafts/
