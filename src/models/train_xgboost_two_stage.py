@@ -1,16 +1,29 @@
-"""Zwei-Stufen-Training mit XGBoost für EURUSD-News.
+"""Zwei‑Stufen‑Training mit XGBoost für EURUSD (Price‑Only oder News+Price).
 
-Stufe 1 (Signal-Modell):
+Dieses Modul wird von den Notebooks unter `notebooks/*two_stage*` verwendet.
+Es enthält bewusst nur die **kernige, wiederverwendbare** Logik (Splits, Targets,
+XGBoost‑Training). Das umfangreiche Experiment‑Setup (Threshold‑Tuning,
+Tradesimulation, Report‑Generierung) passiert in den Notebooks bzw. im
+Report‑Script.
+
+Stufe 1 (Signal‑Modell):
     - Ziel: Vorhersagen, ob eine signifikante Bewegung stattfindet oder nicht.
     - Zielvariable: `signal` (0 = neutral, 1 = Bewegung up/down).
 
-Stufe 2 (Richtungs-Modell):
+Stufe 2 (Richtungs‑Modell):
     - Ziel: Wenn es eine Bewegung gibt, Richtung vorhersagen (up vs. down).
-    - Zielvariable: `direction` (0 = down, 1 = up), nur für Tage mit signal == 1.
+    - Zielvariable: `direction` (0 = down, 1 = up), nur für Tage mit `signal == 1`.
+
+Datensatz‑Erwartung (CSV):
+    - `date` (Datum)
+    - `label` in {neutral, up, down}
+    - `signal` in {0,1}
+    - `direction` in {0,1} oder NaN (für neutral)
+    - Feature‑Spalten (Preis/News/Kalender …)
 
 Zeitliche Splits:
-    - Test: alle Daten ab 2025-01-01 (Zukunft, die das Modell nicht sieht).
-    - Train/Val: alle Daten davor (2020–2024), chronologisch z.B. 80/20 geteilt.
+    - Test: alle Daten ab `test_start` (Default im CLI: 2025‑01‑01).
+    - Train/Val: alle Daten davor, chronologisch z.B. 80/20 geteilt.
 """
 
 from __future__ import annotations
@@ -240,7 +253,7 @@ def build_direction_targets(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Zwei-Stufen-XGBoost für EURUSD-News.")
+    parser = argparse.ArgumentParser(description="Zwei-Stufen-XGBoost für EURUSD (Price/News).")
     parser.add_argument(
         "--dataset",
         type=Path,
