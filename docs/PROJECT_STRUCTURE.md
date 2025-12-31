@@ -20,6 +20,7 @@ Es gibt 3 aktive Pipelines (jeweils 3 Notebooks: Data‑Prep → Training → Ev
    - Notebooks: `notebooks/eodhd_two_stage/`
    - Rohdaten (CSV): `data/raw/fx/EURUSDX_eodhd.csv`
    - News‑Rohdaten (JSONL): `data/raw/news/eodhd_news.jsonl`
+   - News‑Tagesfeatures (wird bei Bedarf automatisch erzeugt): `data/processed/news/eodhd_daily_features.csv`
 
 ## Output‑Konvention pro Experiment (`EXP_ID`)
 
