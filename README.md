@@ -25,7 +25,6 @@ Wenn Matplotlib Warnungen macht (Cache‑Pfad nicht beschreibbar), setze:
 ## Aktuelle Experimente (Pipelines)
 
 Alle Experimente laufen über eine eindeutige `EXP_ID`. Dadurch sind Outputs sauber trennbar und vergleichbar.
-Details: `docs/PROJECT_STRUCTURE.md`.
 
 ### Pipeline 1: MT5 H1 (stündlich → täglich)
 
