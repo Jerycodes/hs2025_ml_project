@@ -60,9 +60,9 @@ Rohdaten:
 - `data/raw/fx/EURUSDX_eodhd.csv`
 - `data/raw/news/eodhd_news.jsonl`
 
-Optional (nur wenn du die News neu laden willst):
-- `python3 -m src.data.fetch_eodhd_news --token $EODHD_TOKEN`
-- `python3 -m src.data.prepare_eodhd_news`
+Hinweis:
+- Die EODHD‑News‑Rohdaten sind bereits im Repo enthalten (kein API‑Token nötig).
+- Ein optionaler Downloader liegt im Archiv: `archive/src/data/fetch_eodhd_news.py` (API‑Token nötig).
 
 ## Output pro `EXP_ID`
 
