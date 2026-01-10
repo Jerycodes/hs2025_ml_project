@@ -114,56 +114,91 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
             return (x - a) / (b - a)
         return (c - x) / (c - b)
 
-    # Input memberships
-    sc = clamp(signal_confidence, 0.0, 1.0)
-    vol = clamp(volatility, 0.0, 1.0)
-    ot = clamp(open_trades, 0.0, 5.0)
-    eq = clamp(equity, 0.0, 1.0)
+    # ========== INPUT FUZZIFIKATION ==========
+    # Die Eingabewerte werden auf ihre jeweiligen Universen geklemmt.
+    sc = clamp(signal_confidence, 0.0, 1.0)   # Signal-Konfidenz: 0=unsicher, 1=sehr sicher
+    vol = clamp(volatility, 0.0, 1.0)          # Volatilität: 0=ruhig, 1=sehr volatil
+    ot = clamp(open_trades, 0.0, 5.0)          # Offene Trades: 0-5 (mehr = höheres Exposure)
+    eq = clamp(equity, 0.0, 1.0)               # Normalisiertes Kapital: 0=wenig, 1=viel
 
-    # High starts earlier to allow higher stakes when the model is "relatively sure".
+    # ========== MEMBERSHIP-FUNKTIONEN FÜR SIGNAL_CONFIDENCE ==========
+    # Die Grenzen wurden so gewählt, dass "high" bereits ab ~72% Konfidenz beginnt,
+    # da typische XGBoost-Wahrscheinlichkeiten selten >85% erreichen.
+    # - low:  [0.0, 0.50] - Modell ist unsicher (< 50% → eher kein Trade)
+    # - med:  [0.35, 0.65, 0.85] - mittlere Sicherheit
+    # - high: [0.72, 1.0] - Modell ist zuversichtlich (ab 72% → grössere Positionen)
     sc_low = left_shoulder(sc, 0.0, 0.50)
     sc_med = triangle(sc, 0.35, 0.65, 0.85)
     sc_high = right_shoulder(sc, 0.72, 1.0)
 
+    # ========== MEMBERSHIP-FUNKTIONEN FÜR VOLATILITY ==========
+    # Bei hoher Volatilität sollte das Risiko reduziert werden.
+    # - low:  [0.0, 0.4] - ruhiger Markt → kann grössere Positionen eingehen
+    # - med:  [0.2, 0.5, 0.8] - moderate Volatilität
+    # - high: [0.6, 1.0] - turbulenter Markt → konservatives Position Sizing
     vol_low = left_shoulder(vol, 0.0, 0.4)
     vol_med = triangle(vol, 0.2, 0.5, 0.8)
     vol_high = right_shoulder(vol, 0.6, 1.0)
 
+    # ========== MEMBERSHIP-FUNKTIONEN FÜR OPEN_TRADES ==========
+    # Mehr offene Positionen → bereits exponiert → kleinere neue Positionen.
+    # - few:  [0.0, 2.0] - wenig Exposure → kann mehr riskieren
+    # - med:  [1.0, 2.5, 4.0] - moderates Exposure
+    # - many: [3.0, 5.0] - viele offene Trades → konservativ
     ot_few = left_shoulder(ot, 0.0, 2.0)
     ot_med = triangle(ot, 1.0, 2.5, 4.0)
     ot_many = right_shoulder(ot, 3.0, 5.0)
 
+    # ========== MEMBERSHIP-FUNKTIONEN FÜR EQUITY ==========
+    # Mehr Kapital erlaubt grössere Positionen, aber nur bei gutem Setup.
+    # - low:  [0.0, 0.45] - unter Referenz → konservativ
+    # - high: [0.55, 1.0] - über Referenz → kann mehr riskieren
     eq_low = left_shoulder(eq, 0.0, 0.45)
     eq_high = right_shoulder(eq, 0.55, 1.0)
 
-    # Rules (Mamdani: AND=min, OR=max, implication=min, aggregation=max)
-    # Base rules:
-    r1_high = min(sc_high, vol_low, ot_few)  # -> risk high
-    r2_med = min(sc_med, vol_med)            # -> risk medium
-    r3_low = max(vol_high, ot_many)          # -> risk low
-    r4_low = max(r3_low, sc_low)             # -> risk low
+    # ========== FUZZY-REGELN (Mamdani-Inferenz) ==========
+    # Operatoren: AND=min, OR=max, Implikation=min, Aggregation=max
+    #
+    # Die Regeln implementieren typische Trading-Risk-Management-Prinzipien:
+    # - Hohe Konfidenz + niedrige Volatilität + wenig Exposure → höheres Risiko erlaubt
+    # - Hohe Volatilität ODER viele offene Trades → Risiko reduzieren
+    # - Niedrige Konfidenz → immer konservativ handeln
+    #
+    # Basisregeln:
+    r1_high = min(sc_high, vol_low, ot_few)  # Regel 1: Ideales Setup → hohes Risiko
+    r2_med = min(sc_med, vol_med)            # Regel 2: Durchschnittliches Setup → mittleres Risiko
+    r3_low = max(vol_high, ot_many)          # Regel 3: Risikofaktoren hoch → niedriges Risiko
+    r4_low = max(r3_low, sc_low)             # Regel 4: Unsicherheit → niedriges Risiko
 
-    # Equity rules:
-    # - more capital => allow higher risk, only if setup isn't "bad"
-    # - less capital => be more conservative
-    r5_high = min(eq_high, sc_high, vol_med)                 # -> risk high
-    r6_high = min(eq_high, sc_med, vol_low, ot_few)          # -> risk high
-    r7_low = eq_low                                          # -> risk low
+    # Kapital-abhängige Regeln:
+    # Bei mehr Kapital kann man bei gutem Setup höheres Risiko eingehen.
+    # Bei wenig Kapital sollte man immer konservativ bleiben.
+    r5_high = min(eq_high, sc_high, vol_med)                 # Regel 5: Kapital hoch + gutes Signal
+    r6_high = min(eq_high, sc_med, vol_low, ot_few)          # Regel 6: Kapital hoch + ruhiger Markt
+    r7_low = eq_low                                          # Regel 7: Kapital niedrig → konservativ
 
-    # Confidence gating (more decisive sizing)
-    r8_high = min(sc_high, vol_low)                          # -> risk high
-    r9_low = sc_low                                          # -> risk low
+    # Konfidenz-basierte Regeln (für entschiedenere Sizing-Entscheidungen):
+    r8_high = min(sc_high, vol_low)                          # Regel 8: Hohes Vertrauen + ruhiger Markt
+    r9_low = sc_low                                          # Regel 9: Niedriges Vertrauen → immer konservativ
 
+    # ========== REGEL-AGGREGATION ==========
+    # Aktivierungsgrade für jede Output-Kategorie (max-Aggregation)
     deg_low = clamp(max(r4_low, r7_low, r9_low, 0.0), 0.0, 1.0)
     deg_med = clamp(max(r2_med, 0.0), 0.0, 1.0)
     deg_high = clamp(max(r1_high, r5_high, r6_high, r8_high, 0.0), 0.0, 1.0)
 
-    # Defuzzify (centroid) on output universe [0,1]
-    num = 0.0
-    den = 0.0
+    # ========== DEFUZZIFIKATION (Centroid-Methode) ==========
+    # Die Centroid-Methode berechnet den Schwerpunkt der aggregierten Output-Menge.
+    # Wir diskretisieren das Output-Universum [0,1] in 1001 Punkte für ausreichende
+    # numerische Genauigkeit (Fehler < 0.1%).
+    num = 0.0  # Zähler für gewichtete Summe
+    den = 0.0  # Nenner für Normalisierung
     for i in range(0, 1001):
         x = i / 1000.0
-        # Output sets: more contrast between low and high.
+        # Output-Membership-Funktionen mit stärkerem Kontrast zwischen low und high:
+        # - low:  [0.0, 0.20] → risiko-avers (kleiner Bereich am unteren Ende)
+        # - med:  [0.15, 0.50, 0.85] → moderates Risiko (breiter mittlerer Bereich)
+        # - high: [0.75, 1.0] → risiko-freudig (kleiner Bereich am oberen Ende)
         mu_low = min(deg_low, left_shoulder(x, 0.0, 0.20))
         mu_med = min(deg_med, triangle(x, 0.15, 0.50, 0.85))
         mu_high = min(deg_high, right_shoulder(x, 0.75, 1.0))
@@ -171,7 +206,7 @@ def _python_fuzzy_risk(signal_confidence: float, volatility: float, open_trades:
         num += x * mu
         den += mu
     if den <= 0.0:
-        return 0.0
+        return 0.0  # Fallback: kein Risiko wenn alle Regeln inaktiv
     return clamp(num / den, 0.0, 1.0)
 
 

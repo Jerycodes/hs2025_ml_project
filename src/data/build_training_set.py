@@ -205,11 +205,17 @@ def build_price_only_training_dataframe_from_labels(exp_id: str | None = None) -
     merged["upper_shadow"] = merged["High"] - merged[["Open", "Close"]].max(axis=1)
     merged["lower_shadow"] = merged[["Open", "Close"]].min(axis=1) - merged["Low"]
 
-    # Stub-News-Spalten, damit add_eurusd_features funktionieren kann.
+    # Stub-News-Spalten für Price-Only-Modus:
+    # Die Funktion add_eurusd_features() erwartet News-Spalten (article_count, avg_polarity etc.),
+    # auch wenn im Price-Only-Modus keine echten News-Daten vorhanden sind.
+    # Durch das Setzen von Null-Werten können wir dieselbe Feature-Pipeline verwenden,
+    # wobei die resultierenden news_*-Features später im Trainings-Notebook
+    # aus feature_cols herausgefiltert werden.
+    # Das vermeidet Code-Duplizierung und hält die Pipeline konsistent.
     merged["article_count"] = 0.0
     merged["avg_polarity"] = 0.0
     merged["avg_neg"] = 0.0
-    merged["avg_neu"] = 1.0
+    merged["avg_neu"] = 1.0  # Neutral-Sentiment als Default (100% neutral)
     merged["avg_pos"] = 0.0
 
     sentiment_denom = (merged["avg_pos"] + merged["avg_neg"]).replace(0, 1e-6)

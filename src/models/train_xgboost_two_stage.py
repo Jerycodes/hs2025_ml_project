@@ -175,11 +175,24 @@ def train_xgb_binary(
     # Guardrail: scale_pos_weight sollte >0 sein. Werte <1 sind valide (wenn die positive Klasse
     # häufiger ist), aber extrem kleine/hohe Werte können zu instabilen oder degenerierten Lösungen
     # führen. Deshalb sanft clampen statt hart auf >=1 zu zwingen.
+    # Clamping-Grenzen [0.2, 5.0]:
+    #   - 0.2: Bei extremer Überrepräsentation der positiven Klasse (>5:1) wird das Gewicht
+    #          auf 0.2 begrenzt, um numerische Instabilitäten zu vermeiden.
+    #   - 5.0: Bei extremer Unterrepräsentation (1:5) begrenzen wir das Gewicht,
+    #          um Overfitting auf die Minderheitsklasse zu reduzieren.
+    # Diese Werte wurden empirisch gewählt und können bei Bedarf angepasst werden.
     scale_pos_weight = float(scale_pos_weight)
     if scale_pos_weight <= 0:
         raise ValueError(f"scale_pos_weight muss > 0 sein, ist aber {scale_pos_weight}.")
     scale_pos_weight = min(max(scale_pos_weight, 0.2), 5.0)
 
+    # XGBoost-Hyperparameter für das binäre Klassifikationsmodell.
+    # Diese konservativen Defaults wurden gewählt, um Overfitting zu vermeiden:
+    #   - max_depth=3: Flache Bäume verhindern übermässige Spezialisierung auf Trainings-Noise.
+    #   - learning_rate=0.05: Niedrige Lernrate erlaubt feinere Anpassungen pro Iteration.
+    #   - n_estimators=400: Viele Bäume kompensieren die niedrige Lernrate.
+    #   - subsample=0.9, colsample_bytree=0.9: Stochastisches Sampling für Regularisierung.
+    # Für spezifische Experimente können diese über den xgb_params-Parameter überschrieben werden.
     params = dict(
         objective="binary:logistic",
         eval_metric="logloss",
@@ -336,11 +349,20 @@ def main() -> None:
     # ---------- kombinierte Auswertung: 3-Klassen-Label auf Test ----------
     print("\n===== KOMBINIERTE TEST-AUSWERTUNG (neutral/up/down) =====")
     X_test_all = splits["test"][feature_cols]
-    # Vorhersage: zuerst Signal, dann Richtung für signal==1
+
+    # Zwei-Stufen-Vorhersage-Logik:
+    # 1) Signal-Modell entscheidet zuerst: "Gibt es eine signifikante Bewegung?" (0=nein, 1=ja)
+    # 2) Nur wenn signal_pred=1, wird das Richtungs-Modell angewendet für up/down.
+    # Hinweis: Das Richtungs-Modell wird auf ALLE Test-Daten angewendet (nicht nur signal=1),
+    # weil wir die kombinierten Vorhersagen für alle Zeilen brauchen. Bei signal_pred=0
+    # wird die Richtungsvorhersage ignoriert (→ "neutral").
     signal_pred = (model_signal.predict_proba(X_test_all)[:, 1] >= 0.5).astype(int)
     dir_pred = (model_dir.predict_proba(X_test_all)[:, 1] >= 0.5).astype(int)
 
-    # Kombiniertes Label
+    # Kombiniertes Label: Kaskadenlogik der zwei Stufen
+    # - signal_pred=0 → immer "neutral" (keine Bewegung erwartet)
+    # - signal_pred=1 + dir_pred=1 → "up"
+    # - signal_pred=1 + dir_pred=0 → "down"
     combined_pred = np.where(
         signal_pred == 0,
         "neutral",

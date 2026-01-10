@@ -144,11 +144,23 @@ Das Notebook erzeugt den PDF‑Report unter:
 Alternative: PDF direkt per Script:
 - `python3 -m scripts.generate_two_stage_report --exp-id <EXP_ID>`
 
-### 4) Hinweis zu „hp/hv“ im Namen
+### 4) Hinweis zu „hp/hv" im Namen
 
 Einige Notebooks enthalten Beispiel‑IDs wie `hp_...` oder `hv_...`.
 Das ist nur eine **Namenskonvention**, damit man Labels/Settings später schneller zuordnen kann.
 Für die Pipeline ist nur wichtig, dass `EXP_ID` eindeutig ist und in Data‑Prep/Train/Eval übereinstimmt.
+
+**Empfohlene Namenskonvention (nicht verpflichtend):**
+- `hp_` = Price-only (ohne News-Features)
+- `hv_` = Mit News-Features (news+price)
+- `_mt5_` = MetaTrader 5 als Datenquelle
+- `_yahoo_` = Yahoo Finance als Datenquelle
+- `_eod_` = EODHD als Datenquelle
+- `_flex_` = Mit Fuzzy-Logic Position Sizing
+
+Beispiele:
+- `hp_mt5_flex_result` = Price-only, MT5-Daten, mit Fuzzy-Sizing
+- `hv_flex_0_7_result` = Mit News, Yahoo-Daten, Fuzzy-Sizing
 
 ## Output pro `EXP_ID`
 
